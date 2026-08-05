@@ -38,7 +38,7 @@ ghostlock: $(SRCS)
 
 product: ghostlock
 	@echo "=== ghostlock binary ready: ./ghostlock ==="
-	@echo "请使用: .\install.ps1"
+	@echo "构建 APK: .\gradlew.bat :app:assembleDebug"
 
 clean:
 	rm -f ghostlock

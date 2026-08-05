@@ -369,7 +369,6 @@ extern int memfd_leak;
 
 int run_exploit(int argc, char **argv);
 int should_stop_cred_write(void);
-int install_embedded_wallpaper(void);
 void read_first_line(const char *path, char *buf, size_t len);
 void log_startup_context(void);
 void log_slide_child_context(void);

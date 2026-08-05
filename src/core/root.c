@@ -92,6 +92,7 @@ int spawn_root_child(void) {
     report.wallpaper_errno = ENOSYS;
     root_shared->report = report;
     atomic_store(&root_shared->done, 1);
+
     _exit(report.uid_after == 0 ? 0 : 1);
   }
 

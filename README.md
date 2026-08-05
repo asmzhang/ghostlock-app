@@ -1,35 +1,34 @@
-# GhostLock for OPPO Find N5 / Find X8
+# GhostLock-Oplus
 
-支持的设备与内核：
+## 支持的设备
 
 | 设备                   | SoC    | 内核版本                                          |
 | ---------------------- | ------ | ------------------------------------------------- |
 | OPPO Find N5（PHK110） | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` |
 | OPPO Find X8（PKB110） | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k` |
 
-启动时会先读取 `uname -r`自动选择对应的 offset 表；不受支持的内核会拒绝运行
+启动时按 `uname -r` 精确匹配 offset 表，未匹配的内核会直接拒绝运行；App 顶部会显示「内核支持 / 不支持」。
 
 ## 快速开始
 
+打开 **GhostLock** 应用，点击 **执行** ，软件会自动完成提取流程，
+需先自行安装 KernelSU（`me.weishu.kernelsu`）软件以使用 `ksud`，
+缺少 `ksud` 时 W1/W2 仍可拿到 uid 0，但不会加载 KernelSU 模块。
+
+## 命令行调试
+
+adb/shell 环境无 seccomp 过滤，会跳过 W3 阶段，适合快速验证：
+
 ```powershell
 make ghostlock
-.install.ps1
+adb push ghostlock /data/local/tmp/ghostlock
+adb shell chmod 755 /data/local/tmp/ghostlock
 adb shell /data/local/tmp/ghostlock
 ```
 
-运行前请确保设备上已有 `ksud`。脚本会依次查找：
-
-1. `/data/app/*/me.weishu.kernelsu*/lib/arm64/libksud.so`
-2. `/data/local/tmp/ksud`
-3. `/data/adb/ksu/bin/ksud`
-
-如果未找到 `ksud`，W1/W2 仍可完成 uid 0 提权，但不会加载 KernelSU
-
 ## 偏移量提取
 
-对于高通设备，可以直接使用 `tools/extract_target.py` 从 `boot.img` 和 `xbl_config.img` 解析偏移量
-
-其依赖 Python 3，以及用于提供 kallsyms 的 `--kallsyms` 文件或 `--kallsyms-finder` 工具
+高通设备可用 `tools/extract_target.py` 从 `boot.img` 和 `xbl_config.img` 解析偏移量，依赖 Python 3 及 kallsyms 来源（`--kallsyms` 文件或 `--kallsyms-finder`）：
 
 ```powershell
 python tools/extract_target.py `
@@ -41,10 +40,8 @@ python tools/extract_target.py `
 
 ## 来源与许可证
 
-本项目参考并基于以下项目：
+基于以下项目改写，继承 Apache License 2.0（见 [LICENSE](LICENSE)）：
 
 - [NebuSec/CyberMeowfia](https://github.com/NebuSec/CyberMeowfia)
 - [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus)
 - [x-spy/CVE-2026-43499-popsicle](https://github.com/x-spy/CVE-2026-43499-popsicle)
-
-本项目继承 Apache License 2.0，详见 [LICENSE](LICENSE)

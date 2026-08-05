@@ -1,0 +1,93 @@
+plugins {
+    id 'com.android.application'
+}
+
+def supportedKernelsSrc = layout.buildDirectory.dir('generated/source/supportedKernels')
+
+tasks.register('generateSupportedKernels') {
+    def offsets = fileTree(rootProject.projectDir) {
+        include 'src/devices/*/offsets.h'
+    }
+    def outFile = supportedKernelsSrc.map { it.file('com/ghostlock/app/SupportedKernels.java') }
+    inputs.files(offsets)
+    outputs.file(outFile)
+    doLast {
+        def names = []
+        offsets.each { f ->
+            f.text.eachLine { line ->
+                line.eachMatch(/OFFSETS_ENTRY\(\s*"([^"]+)"/) { m -> names << m[1]
+                }
+            }
+        }
+        names = names.unique()
+        def sb = new StringBuilder()
+        sb << "package com.ghostlock.app;\n\n"
+        sb << "/** Generated from device offset headers; do not edit. */\n"
+        sb << "public final class SupportedKernels {\n"
+        sb << "    public static final String[] UNAMES = {\n"
+        names.each { name ->
+            def escaped = name.replace('\\', '\\\\').replace('"', '\\"')
+            sb << "        \"${escaped}\",\n"
+        }
+        sb << "    };\n\n"
+        sb << "    private SupportedKernels() {}\n"
+        sb << "}\n"
+        def file = outFile.get().asFile
+        file.parentFile.mkdirs()
+        file.text = sb.toString()
+    }
+}
+
+android {
+    namespace = 'com.ghostlock.app'
+    compileSdk {
+        version = release(37)
+    }
+
+    defaultConfig {
+        applicationId "com.ghostlock.app"
+        minSdk 36
+        targetSdk 37
+        versionCode 1
+        versionName "1.0"
+        ndk {
+            //noinspection ChromeOsAbiSupport
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDir(supportedKernelsSrc.get())
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig = signingConfigs.debug
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    enableKotlin = false
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+tasks.named('preBuild') {
+    dependsOn(rootProject.tasks.named('prepareGhostlockJniLibs'))
+    dependsOn(tasks.named('generateSupportedKernels'))
+}

