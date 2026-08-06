@@ -776,11 +776,17 @@ def validate_frame_live_at(text: str, anchor: str, name: str) -> None:
     ]
     if len(subs) != 1:
         raise ExtractError(f"{name} has {len(subs)} SP frames before anchor")
-    for line in lines[subs[0] + 1:anchor_index]:
-        if re.search(r"\b(?:add|sub)\s+sp,\s*sp,", line, re.I):
-            raise ExtractError(f"{name} adjusts SP again before anchor")
+    for index in range(subs[0] + 1, anchor_index):
+        line = lines[index]
         if re.search(r"\[\s*sp\],\s*#0x[0-9a-f]+", line, re.I):
             raise ExtractError(f"{name} restores SP post-index before anchor")
+        if re.search(r"\b(?:add|sub)\s+sp,\s*sp,", line, re.I):
+            rest = lines[index + 1:anchor_index]
+            if not any(
+                re.search(r"\bd65f03c0\b|\bret\b", tail, re.I)
+                for tail in rest
+            ):
+                raise ExtractError(f"{name} adjusts SP again before anchor")
 
 
 def derive_pselect_layout(
@@ -796,6 +802,9 @@ def derive_pselect_layout(
     Handles both call chains:
       __arm64_sys_pselect6 -> core_sys_select                 (do_pselect inlined)
       __arm64_sys_pselect6 -> do_pselect -> core_sys_select   (6.6 middle layer)
+    and both futex dispatch styles:
+      __arm64_sys_futex -> do_futex -> futex_wait_requeue_pi  (classic)
+      __arm64_sys_futex -> futex_wait_requeue_pi              (direct dispatch)
     """
     names = {
         "pselect_wrapper": "__arm64_sys_pselect6",
@@ -828,14 +837,23 @@ def derive_pselect_layout(
         )
     pselect_chain.append("pselect_core")
 
-    if not has_direct_call(
+    futex_chain = ["futex_wrapper"]
+    futex_wait_addr = unique_offset(symbols, names["futex_wait"])
+    if has_direct_call(dis["futex_wrapper"], futex_wait_addr):
+        pass
+    elif has_direct_call(
         dis["futex_wrapper"], unique_offset(symbols, names["futex_dispatch"])
     ):
-        raise ExtractError("__arm64_sys_futex does not directly call do_futex")
-    if not has_direct_call(
-        dis["futex_dispatch"], unique_offset(symbols, names["futex_wait"])
-    ):
-        raise ExtractError("do_futex does not directly call futex_wait_requeue_pi")
+        if not has_direct_call(dis["futex_dispatch"], futex_wait_addr):
+            raise ExtractError(
+                "do_futex does not directly call futex_wait_requeue_pi"
+            )
+        futex_chain.append("futex_dispatch")
+    else:
+        raise ExtractError(
+            "__arm64_sys_futex calls neither do_futex nor futex_wait_requeue_pi"
+        )
+    futex_chain.append("futex_wait")
 
     for caller_key, callee_key in zip(pselect_chain, pselect_chain[1:]):
         validate_frame_live_at(
@@ -843,16 +861,12 @@ def derive_pselect_layout(
             rf"\bbl\s+0x{unique_offset(symbols, names[callee_key]):x}\b",
             names[caller_key],
         )
-    validate_frame_live_at(
-        dis["futex_wrapper"],
-        rf"\bbl\s+0x{unique_offset(symbols, names['futex_dispatch']):x}\b",
-        names["futex_wrapper"],
-    )
-    validate_frame_live_at(
-        dis["futex_dispatch"],
-        rf"\bbl\s+0x{unique_offset(symbols, names['futex_wait']):x}\b",
-        names["futex_dispatch"],
-    )
+    for caller_key, callee_key in zip(futex_chain, futex_chain[1:]):
+        validate_frame_live_at(
+            dis[caller_key],
+            rf"\bbl\s+0x{unique_offset(symbols, names[callee_key]):x}\b",
+            names[caller_key],
+        )
     frames = {key: first_sp_frame(text, names[key]) for key, text in dis.items()}
 
     pi_tree = btf.field("rt_mutex_waiter", "pi_tree")
@@ -896,9 +910,6 @@ def derive_pselect_layout(
     ]
     buffer_candidates: set[int] = set()
     for reg, imm in add_sp:
-        if not re.search(rf"\bmov\s+{re.escape(reg)},\s*x0\b",
-                         dis["pselect_core"], re.I):
-            continue
         peers = {peer for peer, peer_imm in add_sp if peer_imm == imm and peer != reg}
         if any(
             re.search(rf"\bcmp\s+{re.escape(reg)},\s*{re.escape(peer)}\b",
@@ -917,8 +928,6 @@ def derive_pselect_layout(
     buffer_regs = sorted({
         reg for reg, imm in add_sp
         if imm == pselect_buffer
-        and re.search(rf"\bmov\s+{re.escape(reg)},\s*x0\b",
-                      dis["pselect_core"], re.I)
     })
     if not buffer_regs:
         raise ExtractError("core_sys_select stack buffer has no output register")
@@ -942,12 +951,7 @@ def derive_pselect_layout(
         )
 
     pselect_word0 = -sum(frames[key] for key in pselect_chain) + pselect_buffer
-    futex_waiter = (
-        -frames["futex_wrapper"]
-        - frames["futex_dispatch"]
-        - frames["futex_wait"]
-        + waiter_local
-    )
+    futex_waiter = -sum(frames[key] for key in futex_chain) + waiter_local
     delta = futex_waiter - pselect_word0
     if delta < 0 or delta % 8:
         raise ExtractError(f"pselect/futex overlap is not a non-negative qword: {delta}")
@@ -982,6 +986,7 @@ def derive_pselect_layout(
         "futex_waiter": futex_waiter,
         "pselect_buffer": pselect_buffer,
         "chain": "->".join(names[key] for key in pselect_chain),
+        "futex_chain": "->".join(names[key] for key in futex_chain),
         **{f"frame_{key}": frames[key] for key in frames},
     }
 
