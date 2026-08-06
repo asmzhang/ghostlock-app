@@ -19,7 +19,7 @@ OFFSETS_ENTRY(
     .off_configfs_bin_write_iter = 0x00512e38,
     .off_copy_splice_read = 0x0048ed94,
     .off_noop_llseek = 0x0043c3d8,
-    .off_slide_loggers_0_1 = 0x023f2100,
+    .off_slide_loggers_0_1 = 0x023f20f8,
     .off_ashmem_misc_fops = 0x026a7c70,
     .off_ashmem_fops = 0x013a4f48,
     .off_ashmem_ioctl = 0x00d8691c,

