@@ -163,6 +163,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static String firstValidProperty(String... keys) {
+        for (String key : keys) {
+            String value = validDeviceName(getSystemProperty(key));
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -248,16 +258,8 @@ public class MainActivity extends Activity {
      */
     private String resolveDeviceName() {
         boolean cn = "CN".equalsIgnoreCase(Locale.getDefault().getCountry());
-        String primary = cn ? "ro.vendor.oplus.market.name" : "ro.vendor.oplus.market.enname";
-        String fallback = cn ? "ro.vendor.oplus.market.enname" : "ro.vendor.oplus.market.name";
-        String marketName = validDeviceName(getSystemProperty(primary));
-        if (marketName == null) {
-            marketName = validDeviceName(getSystemProperty(fallback));
-        }
-        if (marketName != null) {
-            return marketName;
-        }
-        return Build.MANUFACTURER + " " + Build.MODEL;
+        String marketName = firstValidProperty(cn ? "ro.vendor.oplus.market.name" : "ro.vendor.oplus.market.enname", cn ? "ro.vendor.oplus.market.enname" : "ro.vendor.oplus.market.name", "ro.product.marketname");
+        return marketName != null ? marketName : Build.MANUFACTURER + " " + Build.MODEL;
     }
 
     private void startExploit() {
@@ -398,7 +400,7 @@ public class MainActivity extends Activity {
         reader.setDaemon(true);
         reader.start();
 
-        boolean finished = process.waitFor(150, TimeUnit.SECONDS);
+        boolean finished = process.waitFor(300, TimeUnit.SECONDS);
         if (!finished) {
             process.destroy();
             if (!process.waitFor(5, TimeUnit.SECONDS)) {

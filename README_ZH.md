@@ -1,13 +1,14 @@
-# GhostLock-Oplus
+# GhostLock-App
 
 > English: [README.md](README.md)
 
 ## 支持的设备
 
-| 设备                   | SoC    | 内核版本                                          |
-| ---------------------- | ------ | ------------------------------------------------- |
-| OPPO Find N5（PHK110） | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` |
-| OPPO Find X8（PKB110） | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k` |
+| Device                       | SoC    | Kernel                                                 |
+| ---------------------------- | ------ | ------------------------------------------------------ |
+| OPPO Find N5 (PHK110)        | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k`      |
+| OPPO Find X8 (PKB110)        | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k`      |
+| Xiaomi 17 Pro Max (popsicle) | SM8850 | `6.12.23-android16-5-g75e9b1c7ae7c-abogki463945075-4k` |
 
 启动时按 `uname -r` 精确匹配 offset 表，未匹配的内核会直接拒绝运行；App 顶部会显示「内核支持 / 不支持」。
 

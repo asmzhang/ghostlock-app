@@ -425,6 +425,38 @@ ASHMEM_FUNCTIONS = {
     "off_ashmem_show_fdinfo": ("ashmem_show_fdinfo", "fops_show_fdinfo"),
 }
 
+# Slot offsets of ashmem function pointers within struct file_operations.
+# The classic C layout (OPPO 6.6) and the 6.12+ Rust ashmem vtable differ by
+# one 8-byte field before unlocked_ioctl; both observed on real devices.
+ASHMEM_FOPS_LAYOUTS = (
+    {
+        "off_ashmem_ioctl": 0x50,
+        "off_ashmem_compat_ioctl": 0x58,
+        "off_ashmem_mmap": 0x60,
+        "off_ashmem_open": 0x68,
+        "off_ashmem_release": 0x78,
+        "off_ashmem_show_fdinfo": 0xd8,
+    },
+    {
+        "off_ashmem_ioctl": 0x48,
+        "off_ashmem_compat_ioctl": 0x50,
+        "off_ashmem_mmap": 0x58,
+        "off_ashmem_open": 0x68,
+        "off_ashmem_release": 0x78,
+        "off_ashmem_show_fdinfo": 0xd8,
+    },
+)
+
+
+# Fields that may legitimately be absent from a kernel's kallsyms (e.g. GKI
+# drops some data symbols). Missing optional fields are emitted as 0, which
+# makes the runtime fall back to the target.h default.
+OPTIONAL_SYMBOLS = {
+    "off_security_hook_heads",
+    "off_ashmem_fops",
+    "off_ashmem_misc_fops",
+}
+
 STRUCT_FIELDS = {
     "task_struct": {
         "task_prio": "prio", "task_normal_prio": "normal_prio",
@@ -492,6 +524,43 @@ def resolve_symbols(
     }
 
 
+def scan_ashmem_fops(
+    kernel: bytes, base: int, resolved: dict[str, int | None]
+) -> int | None:
+    """Locate the ashmem struct file_operations by scanning the kernel image
+    for a struct whose slots point to the resolved ashmem functions.
+
+    Rust (6.12+) ashmem exposes no kallsyms data symbol for its fops, so this
+    pattern scan is the only reliable way to resolve off_ashmem_fops there.
+    Returns the offset from _text, or None when not uniquely found.
+    """
+    candidates: set[int] = set()
+    for layout in ASHMEM_FOPS_LAYOUTS:
+        slots = [
+            (key, off) for key, off in layout.items() if resolved.get(key) is not None
+        ]
+        if len(slots) < 4:
+            continue
+        anchor_key, anchor_off = slots[0]
+        anchor = struct.pack("<Q", base + resolved[anchor_key])
+        max_slot = max(off for _, off in slots)
+        pos = 0
+        while True:
+            pos = kernel.find(anchor, pos)
+            if pos < 0:
+                break
+            start = pos - anchor_off
+            if start >= 0 and start % 8 == 0 and start + max_slot + 8 <= len(kernel):
+                if all(
+                    struct.unpack_from("<Q", kernel, start + off)[0]
+                    == base + resolved[key]
+                    for key, off in slots[1:]
+                ):
+                    candidates.add(start)
+            pos += 1
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
+
 def resolve_structs(btf: Btf) -> dict[str, int | None]:
     result: dict[str, int | None] = {}
     for struct_name, fields in STRUCT_FIELDS.items():
@@ -511,6 +580,7 @@ def resolve_structs(btf: Btf) -> dict[str, int | None]:
     ):
         result[macro] = btf.field("page", field_name)
     result["struct_slab_cache"] = btf.field("slab", "slab_cache")
+    result["struct_mm_struct"] = btf.size("mm_struct")
     return result
 
 
@@ -555,6 +625,111 @@ def require_fields(values: dict[str, int | None], optional: set[str]) -> None:
         raise ExtractError("missing required values: " + ", ".join(sorted(missing)))
 
 
+DEVICE_ROOT = Path(__file__).resolve().parent.parent / "src" / "devices"
+
+
+def device_header_path(name: str) -> Path:
+    return DEVICE_ROOT / name / "offsets.h"
+
+
+def kernel_struct_macro(release: str | None) -> str:
+    """STRUCT_OFFSETS_6_12 for 6.12+ kernels, STRUCT_OFFSETS_6_6 otherwise."""
+    if release:
+        match = re.match(r"^(\d+)\.(\d+)", release)
+        if match and tuple(map(int, match.groups())) >= (6, 12):
+            return "STRUCT_OFFSETS_6_12"
+    return "STRUCT_OFFSETS_6_6"
+
+
+def pselect_waiter_shift_for(release: str | None) -> int:
+    """6.12 GKI moved the pselect fd_set waiter word (shift 0); 6.6 OPPO -2."""
+    return 0 if kernel_struct_macro(release) == "STRUCT_OFFSETS_6_12" else -2
+
+
+def render_device(
+    release: str | None,
+    symbols: dict[str, int | None],
+    structs: dict[str, int | None],
+    phys: int | None,
+) -> str:
+    lines = [f"/* {release} */", ""]
+    lines.append("OFFSETS_ENTRY(")
+    lines.append(f'    "{release}",')
+    lines.append(f"    {kernel_struct_macro(release)},")
+    if phys is not None:
+        lines.append(f"    .kernel_phys_load = 0x{phys:x},")
+    lines.append(f"    .pselect_waiter_shift = {pselect_waiter_shift_for(release)},")
+    for key, value in symbols.items():
+        if value is None:
+            continue
+        lines.append(f"    .{key} = 0x{value:08x},")
+    lines.append("),")
+    reference = {
+        key: value for key, value in structs.items()
+        if value is not None and (
+            key.startswith("struct_page")
+            or key in ("struct_slab_cache", "struct_mm_struct")
+        )
+    }
+    if reference:
+        lines.append("")
+        lines.append("/* BTF reference (runtime uses target.h defaults): */")
+        for key, value in reference.items():
+            lines.append(f"/* #define {key.upper()} 0x{value:X} */")
+    return "\n".join(lines) + "\n"
+
+
+def existing_entries() -> dict[str, dict[str, int]]:
+    """Map each registered release to its {field: value} from device headers."""
+    entries: dict[str, dict[str, int]] = {}
+    for header in sorted(DEVICE_ROOT.glob("*/offsets.h")):
+        text = header.read_text(encoding="utf-8", errors="replace")
+        for match in re.finditer(r'OFFSETS_ENTRY\(\s*"([^"]+)"', text):
+            release = match.group(1)
+            fields: dict[str, int] = {}
+            for fm in re.finditer(
+                r"\.([A-Za-z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|-?\d+)",
+                text[match.end():],
+            ):
+                fields[fm.group(1)] = int(fm.group(2), 0)
+            entries.setdefault(release, fields)
+    return entries
+
+
+def warn_existing_mismatches(
+    release: str | None, symbols: dict[str, int | None]
+) -> None:
+    if not release:
+        return
+    existing = existing_entries().get(release)
+    if not existing:
+        return
+    for key, value in symbols.items():
+        if value is None:
+            continue
+        if key in existing and existing[key] != value:
+            print(
+                f"warning: {release} is already registered with .{key}="
+                f"0x{existing[key]:08X}; this image extracts 0x{value:08X}",
+                file=sys.stderr,
+            )
+
+
+def register_device(name: str) -> Path:
+    """Add #include "<name>/offsets.h" to src/devices/offsets.h if missing."""
+    header = DEVICE_ROOT / "offsets.h"
+    text = header.read_text(encoding="utf-8")
+    include = f'#include "{name}/offsets.h"'
+    if include in text:
+        return header
+    marker = re.search(r"^\s*\{\s*\.uname_r\s*=\s*NULL", text, re.MULTILINE)
+    if marker is None:
+        raise ExtractError(f"cannot locate NULL terminator in {header}")
+    text = text[: marker.start()] + include + "\n" + text[marker.start():]
+    header.write_text(text, encoding="utf-8")
+    return header
+
+
 def render_c(release: str | None, symbols: dict[str, int | None], structs: dict[str, int | None], phys: int | None, name: str) -> str:
     lines = [f"/* Generated offsets for {release or name}. */", ""]
     lines.append("#define STRUCT_OFFSETS_EXTRACTED \\")
@@ -576,7 +751,7 @@ def render_c(release: str | None, symbols: dict[str, int | None], structs: dict[
     for key, value in symbols.items():
         if value is not None:
             lines.append(f"  .{key}=0x{value:08X},")
-    lines.append(")")
+    lines.append("),")
     lines.append("")
     lines.append("/* BTF fields not stored in kernel_offsets: */")
     for key, value in structs.items():
@@ -597,6 +772,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--name", default="target")
     parser.add_argument("--format", choices=("text", "json", "c"), default="text")
+    parser.add_argument(
+        "--device",
+        type=str,
+        help="render and register src/devices/<name>/offsets.h (repo format)",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="treat every unresolved symbol as optional (emit 0)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing device header that differs",
+    )
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
 
@@ -623,9 +813,51 @@ def main(argv: list[str] | None = None) -> int:
         if base is None:
             raise ExtractError("_text/_head is not unique in kallsyms")
         symbol_offsets = resolve_symbols(symbols, types, btf, base)
+        if symbol_offsets.get("off_ashmem_fops") is None:
+            scanned = scan_ashmem_fops(boot.kernel, base, symbol_offsets)
+            if scanned is not None:
+                symbol_offsets["off_ashmem_fops"] = scanned
+                print(
+                    f"info: off_ashmem_fops = 0x{scanned:08x} "
+                    "(file_operations pattern scan)",
+                    file=sys.stderr,
+                )
         struct_offsets = resolve_structs(btf)
+        missing = {key for key, value in symbol_offsets.items() if value is None}
+        existing = existing_entries().get(boot.release() or "", {})
+        tolerated = set(OPTIONAL_SYMBOLS)
+        if args.allow_missing:
+            tolerated.update(missing)
+        for key in sorted(missing & tolerated):
+            carried = existing.get(key) or 0
+            symbol_offsets[key] = carried
+            if carried:
+                print(
+                    f"warning: {key} not found in kallsyms; carried over "
+                    f"0x{carried:08x} from the registered {boot.release()} entry",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"warning: {key} not found in kallsyms; emitted 0x00000000 "
+                    "(runtime falls back to target.h default)",
+                    file=sys.stderr,
+                )
         require_fields(symbol_offsets, set())
         require_fields(struct_offsets, set())
+        mm_size = struct_offsets.get("struct_mm_struct")
+        if mm_size is not None:
+            print(
+                f"info: sizeof(mm_struct)=0x{mm_size:X} "
+                "(MM_STRUCT_SZ=0x500 in src/core/common.h)",
+                file=sys.stderr,
+            )
+            if mm_size > 0x500:
+                print(
+                    "warning: sizeof(mm_struct) exceeds the hardcoded "
+                    "MM_STRUCT_SZ slab stride",
+                    file=sys.stderr,
+                )
         report = {
             "release": boot.release(),
             "kimage_text_base": base,
@@ -634,6 +866,29 @@ def main(argv: list[str] | None = None) -> int:
             "struct_fields": struct_offsets,
             "btf_size": len(btf_raw),
         }
+        if args.device:
+            output = render_device(
+                boot.release(), symbol_offsets, struct_offsets,
+                args.kernel_phys_load,
+            )
+            target = args.out or device_header_path(args.device)
+            if (
+                args.out is None
+                and target.exists()
+                and target.read_text(encoding="utf-8") != output
+                and not args.force
+            ):
+                raise ExtractError(
+                    f"{target} already exists and differs; pass --force to "
+                    "overwrite or --out to write elsewhere"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(output, encoding="utf-8")
+            print(f"wrote {target}", file=sys.stderr)
+            if args.out is None:
+                register_device(args.device)
+            warn_existing_mismatches(boot.release(), symbol_offsets)
+            return 0
         if args.format == "c":
             output = render_c(boot.release(), symbol_offsets, struct_offsets, args.kernel_phys_load, args.name)
         else:

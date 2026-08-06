@@ -7,6 +7,8 @@ struct kernel_offsets {
   const char *uname_r;
   /* Bootloader-selected physical load address; 0 uses target.h. */
   uint64_t kernel_phys_load;
+  /* pselect fd_set waiter word shift; 0 uses target.h default. */
+  int pselect_waiter_shift;
   uint64_t off_init_task, off_init_cred;
   uint64_t off_root_task_group, off_selinux_enforcing;
   uint64_t off_selinux_blob_sizes, off_security_hook_heads, off_kmalloc_caches;
@@ -26,26 +28,27 @@ struct kernel_offsets {
 
 #define OFFSETS_ENTRY(uname, ...) { .uname_r = uname, __VA_ARGS__ }
 
-#define STRUCT_OFFSETS_6_12 \
-  .task_prio=0x94, .task_normal_prio=0x9C, .task_sched_task_group=0x420, \
-  .task_pi_lock=0x9EC, .task_pi_waiters=0xA00, \
-  .task_pi_top_task=0xA10, .task_pi_blocked_on=0xA18, \
-  .task_pid=0x708, .task_tgid=0x70C, \
-  .task_atomic_flags=0x6C8, .task_real_cred=0x8F8, .task_cred=0x900, \
-  .task_comm=0x910, .task_tasks=0x638, .task_seccomp=0x9C8
+#define STRUCT_OFFSETS_6_12                                                    \
+  .task_prio = 0x94, .task_normal_prio = 0x9C, .task_sched_task_group = 0x420, \
+  .task_pi_lock = 0x9EC, .task_pi_waiters = 0xA00,                             \
+  .task_pi_top_task = 0xA10, .task_pi_blocked_on = 0xA18,                      \
+  .task_pid = 0x708, .task_tgid = 0x70C,                                       \
+  .task_atomic_flags = 0x6C8, .task_real_cred = 0x8F8, .task_cred = 0x900,     \
+  .task_comm = 0x910, .task_tasks = 0x638, .task_seccomp = 0x9C8
 
-#define STRUCT_OFFSETS_6_6 \
-  .task_prio=0x84, .task_normal_prio=0x8C, .task_sched_task_group=0x348, \
-  .task_pi_lock=0x90C, .task_pi_waiters=0x920, \
-  .task_pi_top_task=0x930, .task_pi_blocked_on=0x938, \
-  .task_pid=0x618, .task_tgid=0x61C, \
-  .task_atomic_flags=0x5D8, .task_real_cred=0x818, .task_cred=0x820, \
-  .task_comm=0x830, .task_tasks=0x550, .task_seccomp=0x8E8
+#define STRUCT_OFFSETS_6_6                                                     \
+  .task_prio = 0x84, .task_normal_prio = 0x8C, .task_sched_task_group = 0x348, \
+  .task_pi_lock = 0x90C, .task_pi_waiters = 0x920,                             \
+  .task_pi_top_task = 0x930, .task_pi_blocked_on = 0x938,                      \
+  .task_pid = 0x618, .task_tgid = 0x61C,                                       \
+  .task_atomic_flags = 0x5D8, .task_real_cred = 0x818, .task_cred = 0x820,     \
+  .task_comm = 0x830, .task_tasks = 0x550, .task_seccomp = 0x8E8
 
 static const struct kernel_offsets known_offsets[] = {
-  /* Add new devices by creating src/devices/<name>/offsets.h */
+/* Add new devices by creating src/devices/<name>/offsets.h */
 #include "findn5/offsets.h"
 #include "findx8/offsets.h"
+#include "xiaomi17promax/offsets.h"
   { .uname_r = NULL }
 };
 

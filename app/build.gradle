@@ -14,9 +14,9 @@ tasks.register('generateSupportedKernels') {
     doLast {
         def names = []
         offsets.each { f ->
-            f.text.eachLine { line ->
-                line.eachMatch(/OFFSETS_ENTRY\(\s*"([^"]+)"/) { m -> names << m[1]
-                }
+            def matcher = f.text =~ /OFFSETS_ENTRY\(\s*"([^"]+)"/
+            while (matcher.find()) {
+                names << matcher.group(1)
             }
         }
         names = names.unique()

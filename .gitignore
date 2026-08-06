@@ -4,6 +4,8 @@ local.properties
 .idea/
 *.iml
 app/build/
-app/src/main/jniLibs/arm64-v8a/libghostlock.so
+libghostlock.so
 build/
 .DS_Store
+__pycache__
+/devices
