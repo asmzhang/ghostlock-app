@@ -1,23 +1,25 @@
 # GhostLock-Oplus
 
-## 支持的设备
+> 中文: [README_ZH.md](README_ZH.md)
 
-| 设备                   | SoC    | 内核版本                                          |
-| ---------------------- | ------ | ------------------------------------------------- |
-| OPPO Find N5（PHK110） | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` |
-| OPPO Find X8（PKB110） | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k` |
+## Supported Devices
 
-启动时按 `uname -r` 精确匹配 offset 表，未匹配的内核会直接拒绝运行；App 顶部会显示「内核支持 / 不支持」。
+| Device                | SoC    | Kernel                                            |
+| --------------------- | ------ | ------------------------------------------------- |
+| OPPO Find N5 (PHK110) | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k` |
+| OPPO Find X8 (PKB110) | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k` |
 
-## 快速开始
+At startup the kernel is matched against the offset tables via `uname -r`; unsupported kernels are rejected immediately. The app shows the kernel support status at the top.
 
-打开 **GhostLock** 应用，点击 **执行** ，软件会自动完成提取流程，
-需先自行安装 KernelSU（`me.weishu.kernelsu`）软件以使用 `ksud`，
-缺少 `ksud` 时 W1/W2 仍可拿到 uid 0，但不会加载 KernelSU 模块。
+## Quick Start
 
-## 命令行调试
+Open the **GhostLock** app and tap **Run**; the exploit runs automatically.
 
-adb/shell 环境无 seccomp 过滤，会跳过 W3 阶段，适合快速验证：
+Install the KernelSU app (`me.weishu.kernelsu`) first so `ksud` is available. Without `ksud`, stages W1/W2 still grant uid 0, but the KernelSU module will not be loaded.
+
+## Command-Line Debugging
+
+The adb/shell environment has no seccomp filter, so the W3 stage is skipped - handy for quick verification:
 
 ```powershell
 make ghostlock
@@ -26,9 +28,9 @@ adb shell chmod 755 /data/local/tmp/ghostlock
 adb shell /data/local/tmp/ghostlock
 ```
 
-## 偏移量提取
+## Offset Extraction
 
-高通设备可用 `tools/extract_target.py` 从 `boot.img` 和 `xbl_config.img` 解析偏移量，依赖 Python 3 及 kallsyms 来源（`--kallsyms` 文件或 `--kallsyms-finder`）：
+On Qualcomm devices, `tools/extract_target.py` parses offsets from `boot.img` and `xbl_config.img`. Requires Python 3 and a kallsyms source (`--kallsyms` file or `--kallsyms-finder`):
 
 ```powershell
 python tools/extract_target.py `
@@ -38,9 +40,9 @@ python tools/extract_target.py `
   --out offsets.h
 ```
 
-## 来源与许可证
+## Credits & License
 
-基于以下项目改写，继承 Apache License 2.0（见 [LICENSE](LICENSE)）：
+Based on the following projects, licensed under Apache License 2.0 (see [LICENSE](LICENSE)):
 
 - [NebuSec/CyberMeowfia](https://github.com/NebuSec/CyberMeowfia)
 - [JoinChang/ghostlock-oneplus](https://github.com/JoinChang/ghostlock-oneplus)
