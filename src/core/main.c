@@ -397,7 +397,6 @@ static void write_root_script(void) {
       "  echo \"[*] late-load kmi=$KMI\" >>\"$LOG\"\n"
       "  \"$KSUD\" late-load --kmi \"$KMI\" --allow-shell >>\"$LOG\" 2>&1\n"
       "  echo \"[*] late-load exit=$?\" >>\"$LOG\"\n"
-      "  dmesg | tail -20 >>\"$LOG\" 2>&1\n"
       "fi\n"
       "KSU_READY=0\n"
       "for i in $(seq 1 50); do\n"
