@@ -6,10 +6,11 @@
 
 | Device                       | SoC    | Kernel                                                 |
 | ---------------------------- | ------ | ------------------------------------------------------ |
+| Xiaomi 15 Pro (haotian)      | SM8750 | `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`  |
+| Redmi K90 Ultra (warsaw)     | SM8750 | `6.6.118-android15-8-g608a629fedf7-ab15154340-4k`      |
 | OPPO Find N5 (PKH110)        | SM8750 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k`      |
 | OPPO Find X8 (PKB110)        | MT6991 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k`      |
 | Xiaomi 17 Pro Max (popsicle) | SM8850 | `6.12.23-android16-5-g75e9b1c7ae7c-abogki463945075-4k` |
-| Xiaomi 15 Pro (haotian)      | SM8750 | `6.6.77-android15-8-gca30f3b4bef6-abogki440974771-4k`  |
 
 At startup the kernel is matched against the offset tables via `uname -r`; unsupported kernels are rejected immediately. The app shows the kernel support status at the top.
 

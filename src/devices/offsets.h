@@ -46,10 +46,11 @@ struct kernel_offsets {
 
 static const struct kernel_offsets known_offsets[] = {
 /* Add new devices by creating src/devices/<name>/offsets.h */
-#include "findn5/offsets.h"
-#include "findx8/offsets.h"
+#include "oppofindn5/offsets.h"
+#include "oppofindx8/offsets.h"
 #include "xiaomi17promax/offsets.h"
 #include "xiaomi15pro/offsets.h"
+#include "redmik90ultra/offsets.h"
   { .uname_r = NULL }
 };
 
