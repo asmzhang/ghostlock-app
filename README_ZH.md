@@ -11,6 +11,7 @@
 | `6.6.118-android15-8-g608a629fedf7-ab15154340-4k`      | Redmi K90 Ultra (SM8750)                       |
 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k`      | OPPO Find N5 (SM8750)                          |
 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k`      | OPPO Find X8 (MT6991)                          |
+| `6.6.118-android15-8-ge58033dc8ea6-abogki498046332-4k` | OPPO Pad 5 (MT6991Z)                           |
 | `6.12.23-android16-5-g75e9b1c7ae7c-abogki463945075-4k` | Xiaomi 17 / 17 Pro / 17 Pro Max (SM8850)       |
 
 启动时按 `uname -r` 匹配偏移表，未匹配的内核会直接拒绝运行，App 顶部显示支持状态。偏移表按精确的 `uname -r` 组织在 `src/kernels/` 下，同一构建的设备共用一行——例如 Redmi K90 与 Xiaomi Civi 5 Pro，以及 Xiaomi 17 / 17 Pro / 17 Pro Max。新增跑在已列内核上的设备时，在对应行追加设备名即可（提取器的 `--register` 会提示共用该内核，不会重复建表）；全新内核构建则新增一行。
@@ -34,7 +35,7 @@ adb shell /data/local/tmp/ghostlock
 
 ## 偏移量提取
 
-`tools/extract_target.py` 从 `boot.img` 和 `xbl_config.img` 解析偏移量，需 Python 3 及 kallsyms 来源（`--kallsyms`/`--kallsyms-finder`）；传 `--llvm-objdump` 还会自动推导 `pselect_waiter_shift` 与 `off_slide_loggers_0_1`。用 `--format c --out offsets.h` 输出独立头文件，或用 `--register` 注册到仓库（存于 `src/kernels/<uname-release>/offsets.h`，目录名即完整 `uname -r`；已注册的内核会提示共用，不会重复建表）：
+`tools/extract_target.py` 从 `boot.img` 和 `xbl_config.img` 解析偏移量，需 Python 3、`lz4` 模块（联发科内核为 LZ4 压缩；`pip install -r tools/requirements.txt`）及 kallsyms 来源（`--kallsyms`/`--kallsyms-finder`）；传 `--llvm-objdump` 还会自动推导 `pselect_waiter_shift` 与 `off_slide_loggers_0_1`。联发科镜像没有 `xbl_config.img` 且通常没有内嵌 BTF，LZ4 镜像会自动按 MTK 加载地址 `0x80000000` 处理（可用 `--phys` 覆盖）——符号来自 kallsyms，结构体偏移回退到 `target.h` 默认值。用 `--format c --out offsets.h` 输出独立头文件，或用 `--register` 注册到仓库（存于 `src/kernels/<uname-release>/offsets.h`，目录名即完整 `uname -r`；已注册的内核会提示共用，不会重复建表）：
 
 ```powershell
 python tools/extract_target.py `

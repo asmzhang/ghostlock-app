@@ -13,6 +13,7 @@ Kernel exploit app for recent Xiaomi / Redmi / OPPO devices (CVE-2026-43499), dr
 | `6.6.118-android15-8-g608a629fedf7-ab15154340-4k`      | Redmi K90 Ultra (SM8750)                       |
 | `6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k`      | OPPO Find N5 (SM8750)                          |
 | `6.6.118-android15-8-gebdfad32d749-ab15099304-4k`      | OPPO Find X8 (MT6991)                          |
+| `6.6.118-android15-8-ge58033dc8ea6-abogki498046332-4k` | OPPO Pad 5 (MT6991Z)                           |
 | `6.12.23-android16-5-g75e9b1c7ae7c-abogki463945075-4k` | Xiaomi 17 / 17 Pro / 17 Pro Max (SM8850)       |
 
 At startup the kernel is matched via `uname -r`; unsupported kernels are rejected immediately and the app shows the status at the top. Tables live under `src/kernels/` keyed by the exact `uname -r`, so devices on the same build share one row — Redmi K90 & Xiaomi Civi 5 Pro, and Xiaomi 17 / 17 Pro / 17 Pro Max. To add a device on a listed kernel, append it to that row (the extractor's `--register` reports the kernel as shared instead of duplicating it); a new kernel build gets a new row.
@@ -36,7 +37,7 @@ adb shell /data/local/tmp/ghostlock
 
 ## Offset Extraction
 
-`tools/extract_target.py` parses offsets from `boot.img` and `xbl_config.img`. It needs Python 3 and a kallsyms source (`--kallsyms`/`--kallsyms-finder`); passing `--llvm-objdump` also auto-derives `pselect_waiter_shift` and `off_slide_loggers_0_1`. Dump a standalone header with `--format c --out offsets.h`, or register the table in the repo with `--register` (stored under `src/kernels/<uname-release>/offsets.h`, directory name = exact `uname -r`; an already-registered kernel is reported as shared instead of duplicating the table):
+`tools/extract_target.py` parses offsets from `boot.img` and `xbl_config.img`. It needs Python 3, the `lz4` module (MediaTek kernels are LZ4-compressed; `pip install -r tools/requirements.txt`), and a kallsyms source (`--kallsyms`/`--kallsyms-finder`); passing `--llvm-objdump` also auto-derives `pselect_waiter_shift` and `off_slide_loggers_0_1`. MediaTek images have no `xbl_config.img` and usually no embedded BTF, the MTK load address (`0x80000000`) is assumed automatically for LZ4 images (override with `--phys`) — symbols come from kallsyms and struct offsets fall back to `target.h` defaults. Dump a standalone header with `--format c --out offsets.h`, or register the table in the repo with `--register` (stored under `src/kernels/<uname-release>/offsets.h`, directory name = exact `uname -r`; an already-registered kernel is reported as shared instead of duplicating the table):
 
 ```powershell
 python tools/extract_target.py `
