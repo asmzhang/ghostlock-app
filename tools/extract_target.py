@@ -510,9 +510,8 @@ ASHMEM_FUNCTIONS = {
     "off_ashmem_show_fdinfo": ("ashmem_show_fdinfo", "fops_show_fdinfo"),
 }
 
-# Slot offsets of ashmem function pointers within struct file_operations.
-# The classic C layout (OPPO 6.6) and the 6.12+ Rust ashmem vtable differ by
-# one 8-byte field before unlocked_ioctl; both observed on real devices.
+# Ashmem fops slot offsets: the classic C layout (OPPO 6.6) and the 6.12+
+# Rust vtable differ by one 8-byte field before unlocked_ioctl.
 ASHMEM_FOPS_LAYOUTS = (
     {
         "off_ashmem_ioctl": 0x50,
@@ -533,9 +532,8 @@ ASHMEM_FOPS_LAYOUTS = (
 )
 
 
-# Fields that may legitimately be absent from a kernel's kallsyms (e.g. GKI
-# drops some data symbols). Missing optional fields are emitted as 0, which
-# makes the runtime fall back to the target.h default.
+# Symbols that may be absent from kallsyms (e.g. GKI drops data symbols);
+# missing optional fields emit 0 so the runtime falls back to target.h.
 OPTIONAL_SYMBOLS = {
     "off_security_hook_heads",
     "off_ashmem_fops",
@@ -647,15 +645,10 @@ def scan_ashmem_fops(
 
 
 
-# ---------------------------------------------------------------------------
-# llvm-objdump disassembly: auto-derive pselect_waiter_shift and the
-# nf_logger slide slot.  Ported from Linuxoid-cn/CVE-2026-43499-Poc-Analysis
-# generate_target.py (derive_pselect_layout / derive_nf_logger_registration).
-#
-# Kernel Image note: the arm64 Image is a PE/COFF file whose section raw
-# offsets equal their virtual addresses, so llvm-objdump addresses equal the
-# base-relative kallsyms offsets (raw_ptr == vaddr == RVA).
-# ---------------------------------------------------------------------------
+# llvm-objdump: auto-derive pselect_waiter_shift and the nf_logger slide slot
+# (ported from Linuxoid-cn/CVE-2026-43499-Poc-Analysis generate_target.py).
+# arm64 Image is PE/COFF with raw offsets == virtual addresses, so objdump
+# addresses equal the base-relative kallsyms offsets (raw == vaddr == RVA).
 
 PSELECT_ROUTE_NFDS = 320
 OBJDUMP_CAP = 0x2000
@@ -960,12 +953,10 @@ def derive_pselect_layout(
         raise InfeasibleError(
             f"PSELECT_WAITER_WORD_SHIFT too large: {shift}"
         )
-    # Feasibility (ghostlock-oneplus rule): core_sys_select copies only
-    # 3 x FDS_BYTES(route_nfds) bytes of user fd_set data onto the stack,
-    # i.e. global words 0..14 for route_nfds=320.  The fake rt_mutex_waiter
-    # starts at pselect word `shift`, and its lock field is at waiter
-    # qword 11, so shift + 11 must stay <= 14 or task/lock land in the
-    # kernel-zeroed tail of stack_fds and the route can never work.
+    # Feasibility: core_sys_select copies only 3 x FDS_BYTES(route_nfds) of
+    # fd_set onto the stack (qwords 0..14 for nfds=320); the waiter lock is at
+    # qword shift+11, so shift + 11 <= 14 or task/lock land in the zeroed tail
+    # and the route can never work.
     if shift > 3:
         raise InfeasibleError(
             f"futex waiter starts {shift} qwords above the fd_set buffer; "
@@ -1204,11 +1195,21 @@ def require_fields(values: dict[str, int | None], optional: set[str]) -> None:
         raise ExtractError("missing required values: " + ", ".join(sorted(missing)))
 
 
-DEVICE_ROOT = Path(__file__).resolve().parent.parent / "src" / "devices"
+KERNEL_ROOT = Path(__file__).resolve().parent.parent / "src" / "kernels"
 
 
-def device_header_path(name: str) -> Path:
-    return DEVICE_ROOT / name / "offsets.h"
+def kernel_key(release: str | None) -> str:
+    """Directory name for a kernel table: the full uname release.
+
+    Using the exact runtime match key avoids collisions between builds that
+    share a version+hash but differ in build id (e.g. -abogki... vs -ab13...).
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "_", release or "unknown")
+
+
+def kernel_header_path(key: str) -> Path:
+    return KERNEL_ROOT / key / "offsets.h"
+
 
 
 def kernel_struct_macro(release: str | None) -> str:
@@ -1264,9 +1265,9 @@ def render_device(
 
 
 def existing_entries() -> dict[str, dict[str, int]]:
-    """Map each registered release to its {field: value} from device headers."""
+    """Map each registered release to its {field: value} from kernel headers."""
     entries: dict[str, dict[str, int]] = {}
-    for header in sorted(DEVICE_ROOT.glob("*/offsets.h")):
+    for header in sorted(KERNEL_ROOT.glob("*/offsets.h")):
         text = header.read_text(encoding="utf-8", errors="replace")
         for match in re.finditer(r'OFFSETS_ENTRY\(\s*"([^"]+)"', text):
             release = match.group(1)
@@ -1306,11 +1307,11 @@ def warn_existing_mismatches(
                 )
 
 
-def register_device(name: str) -> Path:
-    """Add #include "<name>/offsets.h" to src/devices/offsets.h if missing."""
-    header = DEVICE_ROOT / "offsets.h"
+def register_kernel(key: str) -> Path:
+    """Add #include "<key>/offsets.h" to src/kernels/offsets.h if missing."""
+    header = KERNEL_ROOT / "offsets.h"
     text = header.read_text(encoding="utf-8")
-    include = f'#include "{name}/offsets.h"'
+    include = f'#include "{key}/offsets.h"'
     if include in text:
         return header
     marker = re.search(r"^\s*\{\s*\.uname_r\s*=\s*NULL", text, re.MULTILINE)
@@ -1371,9 +1372,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", default="target")
     parser.add_argument("--format", choices=("text", "json", "c"), default="text")
     parser.add_argument(
-        "--device",
-        type=str,
-        help="render and register src/devices/<name>/offsets.h (repo format)",
+        "--register",
+        action="store_true",
+        help="register the kernel table in the repo under "
+        "src/kernels/<release>/offsets.h (repo format)",
     )
     parser.add_argument(
         "--allow-missing",
@@ -1387,6 +1389,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
+    if args.register and args.out is not None:
+        parser.error("--register cannot be combined with --out")
 
     try:
         boot = BootImage.load(args.image)
@@ -1444,9 +1448,8 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                 else:
-                    # Linuxoid's fops waiter words start at index 0; ours
-                    # (and ghostlock-oneplus) start at index 2, so the shift
-                    # for our layout is the derived value minus 2.
+                    # Linuxoid indexes fops waiter words from 0; ours start
+                    # at 2, so our shift is the derived value minus 2.
                     derived["pselect_waiter_shift"] = (
                         pselect["PSELECT_WAITER_WORD_SHIFT"] - 2
                     )
@@ -1547,28 +1550,38 @@ def main(argv: list[str] | None = None) -> int:
             "struct_fields": struct_offsets,
             "btf_size": len(btf_raw),
         }
-        if args.device:
+        if args.register:
+            release = boot.release()
+            key = kernel_key(release)
+            if release in existing_entries():
+                # Same kernel already registered: keep one table.
+                warn_existing_mismatches(release, symbol_offsets)
+                if kernel_header_path(key).exists():
+                    print(
+                        f"info: {release} already registered; "
+                        "no duplicate table created",
+                        file=sys.stderr,
+                    )
+                    return 0
             output = render_device(
-                boot.release(), symbol_offsets, struct_offsets,
+                release, symbol_offsets, struct_offsets,
                 args.kernel_phys_load, pselect_shift,
             )
-            target = args.out or device_header_path(args.device)
+            target = kernel_header_path(key)
             if (
-                args.out is None
-                and target.exists()
+                target.exists()
                 and target.read_text(encoding="utf-8") != output
                 and not args.force
             ):
                 raise ExtractError(
                     f"{target} already exists and differs; pass --force to "
-                    "overwrite or --out to write elsewhere"
+                    "overwrite"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(output, encoding="utf-8")
             print(f"wrote {target}", file=sys.stderr)
-            if args.out is None:
-                register_device(args.device)
-            warn_existing_mismatches(boot.release(), symbol_offsets)
+            register_kernel(key)
+            warn_existing_mismatches(release, symbol_offsets)
             return 0
         if args.format == "c":
             output = render_c(

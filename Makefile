@@ -24,7 +24,7 @@ SRCS := \
 TARGET_CONFIG ?= target.h
 
 CFLAGS = -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
-  -Isrc/core -Isrc/devices -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
+  -Isrc/core -Isrc/kernels -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
 LDFLAGS := -fPIE -pie -pthread
 
 .PHONY: all clean product
