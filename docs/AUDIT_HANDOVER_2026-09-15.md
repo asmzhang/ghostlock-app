@@ -119,6 +119,6 @@ adb -s 3e6f1443 shell 'grep -c kernelpatch /proc/modules'   # 期望: 1
 
 ## 7. 未决事项（需用户决定）
 
-1. **提交** `my2` 的 32 项改动（压成 1 个提交；本机 git 有丢 ref 病史 ⇒ 走 `git_commit_repair.sh` SOP + 另起命令验 `git log -1`）；
-2. **独立化** `my2`：`git clone …/root/ghostlock-app <REPO>` → 在该克隆里 checkout `my2` ⇒ 解除 R1；
-3. 是否把 `exp/`（90 个历史脚本）也纳入档案。
+1. ✅ **已完成（2026-09-16 11:01）**：`my2` 61 个文件压成 1 个提交 `aa37ddf`（走 `git_commit_repair.sh` SOP，`REF_OK` + 另起命令验证通过；与 347dfec 的 diff 仍为空）；
+2. ✅ **已完成（2026-09-16 11:12）**：独立主仓 **`<REPO>`**（本地 clone，唯一分支 `my2`=`aa37ddf`，本地 `main` 已删除；独立构建 md5 与 my2/归档成功件三方一致）⇒ R1 解除；旧仓库转为**冻结档案**（39 个未推送提交 + 32 项未提交改动原地封存，勿用勿删）；
+3. 仍未决：是否把 `exp/`（90 个历史脚本）也纳入档案。
