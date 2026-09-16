@@ -1,0 +1,204 @@
+26/09/14 19:15:11
+reason : userrequested
+java.lang.Exception: It is not an exception!! just save the trace for process which called shutdown thread!! ShutdownThread.shutdown
+	at com.android.server.power.ShutdownThread.shutdownInner(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:212)
+	at com.android.server.power.ShutdownThread.shutdown(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:47)
+	at com.android.server.statusbar.StatusBarManagerService$$ExternalSyntheticLambda0.run(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:26)
+	at android.os.Handler.handleCallback(Handler.java:995)
+	at android.os.Handler.dispatchMessage(Handler.java:103)
+	at android.os.Looper.loopOnce(Looper.java:273)
+	at android.os.Looper.loop(Looper.java:363)
+	at com.android.server.SystemServer.main(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:867)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:632)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:953)
+19:15:15  2026-09-14 19:15:15-0700 | SHUTDOWN |       | REASON: userrequested [222]
+19:15:15  terminating init service start
+19:15:16  terminating init service end
+19:15:16  volume shutdown start
+19:15:16  sync() before umount...
+19:15:17  sync() before umount took
+19:15:17  zram start
+19:15:17  zram end
+19:15:19  TryUmountAndFsck start
+2026-09-15 02:15:40+0000 |          | RP    | [223] / 4187mV (77%) 
+
+2026-09-15 02:15:40+0000 |   LPM    |       |
+
+2026-09-14 19:30:05-0700 |    ON    | RP    | A356USQS6CYJ2 [224]
+
+19:31:45  2026-09-14 19:31:45-0700 |  REBOOT  |       | REASON: shell [224]
+19:31:45  terminating init service start
+19:31:46  terminating init service end
+19:31:46  volume shutdown start
+19:31:47  sync() before umount...
+19:31:47  sync() before umount took
+19:31:47  zram start
+19:31:47  zram end
+19:31:50  TryUmountAndFsck start
+2026-09-14 19:32:23-0700 |    ON    | RP    | A356USQS6CYJ2 [225]
+
+2026-09-14 19:33:57-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 88 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [226]
+
+19:36:53  2026-09-14 19:36:53-0700 |  REBOOT  |       | REASON: shell [226]
+19:36:53  terminating init service start
+19:36:54  terminating init service end
+19:36:54  volume shutdown start
+19:36:54  sync() before umount...
+19:36:54  sync() before umount took
+19:36:54  zram start
+19:36:55  zram end
+19:36:58  TryUmountAndFsck start
+2026-09-14 19:37:31-0700 |    ON    | RP    | A356USQS6CYJ2 [227]
+
+19:40:42  2026-09-14 19:40:42-0700 |  REBOOT  |       | REASON: shell [227]
+19:40:42  terminating init service start
+19:40:43  terminating init service end
+19:40:43  volume shutdown start
+19:40:43  sync() before umount...
+19:40:43  sync() before umount took
+19:40:43  zram start
+19:40:44  zram end
+19:40:46  TryUmountAndFsck start
+2026-09-14 19:41:20-0700 |    ON    | RP    | A356USQS6CYJ2 [228]
+
+19:44:32  2026-09-14 19:44:32-0700 |  REBOOT  |       | REASON: shell [228]
+19:44:32  terminating init service start
+19:44:35  terminating init service end
+19:44:35  volume shutdown start
+19:44:36  sync() before umount...
+19:44:36  sync() before umount took
+19:44:36  zram start
+19:44:36  zram end
+19:44:39  TryUmountAndFsck start
+2026-09-14 19:45:12-0700 |    ON    | RP    | A356USQS6CYJ2 [229]
+
+19:52:10  2026-09-14 19:52:10-0700 |  REBOOT  |       | REASON: shell [229]
+19:52:10  terminating init service start
+19:52:11  terminating init service end
+19:52:11  volume shutdown start
+19:52:12  sync() before umount...
+19:52:12  sync() before umount took
+19:52:12  zram start
+19:52:12  zram end
+19:52:15  TryUmountAndFsck start
+2026-09-14 19:52:49-0700 |    ON    | RP    | A356USQS6CYJ2 [230]
+
+20:00:02  2026-09-14 20:00:02-0700 |  REBOOT  |       | REASON: shell [230]
+20:00:02  terminating init service start
+20:00:03  terminating init service end
+20:00:03  volume shutdown start
+20:00:03  sync() before umount...
+20:00:04  sync() before umount took
+20:00:04  zram start
+20:00:04  zram end
+20:00:07  TryUmountAndFsck start
+2026-09-14 20:00:40-0700 |    ON    | RP    | A356USQS6CYJ2 [231]
+
+20:07:13  2026-09-14 20:07:13-0700 |  REBOOT  |       | REASON: shell [231]
+20:07:13  terminating init service start
+20:07:14  terminating init service end
+20:07:14  volume shutdown start
+20:07:14  sync() before umount...
+20:07:14  sync() before umount took
+20:07:14  zram start
+20:07:15  zram end
+20:07:17  TryUmountAndFsck start
+2026-09-14 20:07:51-0700 |    ON    | RP    | A356USQS6CYJ2 [232]
+
+20:17:51  2026-09-14 20:17:51-0700 |  REBOOT  |       | REASON: shell [232]
+20:17:51  terminating init service start
+20:17:53  terminating init service end
+20:17:53  volume shutdown start
+20:17:53  sync() before umount...
+20:17:53  sync() before umount took
+20:17:53  zram start
+20:17:53  zram end
+20:17:56  TryUmountAndFsck start
+2026-09-14 20:18:30-0700 |    ON    | RP    | A356USQS6CYJ2 [233]
+
+20:29:51  2026-09-14 20:29:51-0700 |  REBOOT  |       | REASON: shell [233]
+20:29:51  terminating init service start
+20:29:52  terminating init service end
+20:29:52  volume shutdown start
+20:29:52  sync() before umount...
+20:29:52  sync() before umount took
+20:29:52  zram start
+20:29:53  zram end
+20:29:56  TryUmountAndFsck start
+2026-09-14 20:30:29-0700 |    ON    | RP    | A356USQS6CYJ2 [234]
+
+2026-09-14 21:32:29-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 89 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [235]
+
+2026-09-14 21:35:59-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 90 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [236]
+
+2026-09-14 21:37:58-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 91 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [237]
+
+2026-09-14 21:40:29-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 92 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [238]
+
+2026-09-14 21:42:29-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 93 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [239]
+
+26/09/14 21:46:12
+reason : userrequested
+java.lang.Exception: It is not an exception!! just save the trace for process which called shutdown thread!! ShutdownThread.shutdown
+	at com.android.server.power.ShutdownThread.shutdownInner(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:212)
+	at com.android.server.power.ShutdownThread.shutdown(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:47)
+	at com.android.server.statusbar.StatusBarManagerService$$ExternalSyntheticLambda0.run(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:26)
+	at android.os.Handler.handleCallback(Handler.java:995)
+	at android.os.Handler.dispatchMessage(Handler.java:103)
+	at android.os.Looper.loopOnce(Looper.java:273)
+	at android.os.Looper.loop(Looper.java:363)
+	at com.android.server.SystemServer.main(qb/102661009 01daf47d27b5720d791e22d33c27af9a8712780c5f1aa6cee7730ba79bcb2242:867)
+	at java.lang.reflect.Method.invoke(Native Method)
+	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:632)
+	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:953)
+21:46:15  2026-09-14 21:46:15-0700 | SHUTDOWN |       | REASON: userrequested [239]
+21:46:16  terminating init service start
+21:46:17  terminating init service end
+21:46:17  volume shutdown start
+21:46:17  sync() before umount...
+21:46:17  sync() before umount took
+21:46:17  zram start
+21:46:17  zram end
+21:46:20  TryUmountAndFsck start
+2026-09-15 04:46:41+0000 |          | RP    | [240] / 4172mV (80%) 
+
+2026-09-15 04:46:41+0000 |   LPM    |       |
+
+2026-09-14 21:50:40-0700 |    ON    | RP    | A356USQS6CYJ2 [241]
+
+2026-09-14 21:53:04-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 94 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [242]
+
+22:06:34  2026-09-14 22:06:34-0700 | SHUTDOWN |       | REASON: shell [242]
+22:06:34  terminating init service start
+22:06:36  terminating init service end
+22:06:36  volume shutdown start
+22:06:36  sync() before umount...
+22:06:36  sync() before umount took
+22:06:36  zram start
+22:06:37  zram end
+22:06:39  TryUmountAndFsck start
+2026-09-15 05:07:01+0000 |          | RP    | [243] / 4173mV (80%) 
+
+2026-09-15 05:07:01+0000 |   LPM    |       |
+
+2026-09-14 22:08:52-0700 |    ON    | RP    | A356USQS6CYJ2 [244]
+
+2026-09-14 22:10:42-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 95 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [245]
+
+2026-09-14 22:47:40-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 96 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [246]
+
+2026-09-14 22:49:07-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 97 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [247]
+
+2026-09-14 22:52:42-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 98 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [248]
+
+2026-09-14 22:55:03-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 99 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [249]
+
+2026-09-14 22:57:24-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 100 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [250]
+
+2026-09-14 22:58:23-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 101 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [251]
+
+2026-09-14 22:59:26-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 102 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [252]
+
+2026-09-14 23:00:25-0700 |    ON    | KP    | A356USQS6CYJ2 / OFFSRC: (M)- (S)- / ONSRC: JIGONB / RST_STAT: SOFT / RCNT: 103 / PC: _raw_spin_trylock+0x20/0xc0 LR: rt_mutex_adjust_prio_chain+0x144/0x9c4 PANIC: Oops: Fatal exception [253]
+

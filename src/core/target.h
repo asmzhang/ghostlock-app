@@ -77,6 +77,24 @@
 #define TASK_THREAD_INFO_FLAGS_OFF 0x00
 #define TASK_SECCOMP_OFF 0x8e8
 
+/* struct cred layout. These are the offsets the Oplus/randstruct target was
+ * tuned against -- DO NOT "correct" them from gki510-arm64: that prebuilt is
+ * a DIFFERENT kernel (its link base is 0xffffffc01....... and init_cred sits
+ * at 0x2fd1418, versus this target's KIMAGE_TEXT_BASE 0xffffffc080000000 and
+ * INIT_CRED_OFF 0x02130748), and its BTF shows a non-randstruct layout
+ * (uid@4), so it is NOT authoritative for this device.
+ *
+ * To regenerate for any target, run gki510-arm64/dump_btf.py against THAT
+ * kernel's vmlinux (it parses BTF directly out of the image):
+ *   usage@0 uid@4 gid@8 ... security@0x78 user@0x80 user_ns@0x88
+ *   group_info@0x90      (size 0xa8)   -- for the non-randstruct GKI.
+ *
+ * usage is at offset 0 in every layout, so CRED_USAGE_OFF is portable.
+ * The refcounted pointers (user/user_ns/group_info) vary with the layout and
+ * MUST be verified per target; they are wired through env overrides in
+ * fill_init_cred_copy() and are left NULL unless explicitly enabled. */
+#define CRED_SIZE 0xa8
+#define CRED_USAGE_OFF 0x00
 #define CRED_UID_OFF 8
 #define CRED_SECUREBITS_OFF 40
 #define CRED_CAPS_OFF 48

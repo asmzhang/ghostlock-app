@@ -55,8 +55,28 @@ struct kernel_offsets {
   .task_atomic_flags = 0x5D8, .task_real_cred = 0x818, .task_cred = 0x820,     \
   .task_comm = 0x830, .task_tasks = 0x550, .task_seccomp = 0x8E8
 
+/* android12-5.10 GKI (marble / SM7475 WAIPIO). compact_waiter=1: the 5.10
+ * rt_mutex_waiter uses tree_entry/pi_tree_entry (same field names as 6.1).
+ * Derived from AOSP GKI 5.10 arm64 vmlinux BTF.
+ *
+ * mm_struct stride is 0x3c0 (960), NOT the AOSP GKI BTF size 0x3e0 and
+ * NOT the 6.1 kmalloc-1k stride 0x400. Verified against the running
+ * kernel's /proc/slabinfo on marble:
+ *   mm_struct 646 646 960 34 8 ...
+ * objsize=960 with objperslab=34 on 8 pages (32K) confirms stride 960
+ * (32768/960 = 34.13 -> 34). MM_ORDER 3 matches pagesperslab=8. */
+#define STRUCT_OFFSETS_5_10                                                     \
+  .task_prio = 0x84, .task_normal_prio = 0x8C, .task_sched_task_group = 0x310, \
+  .task_pi_lock = 0x86C, .task_pi_waiters = 0x880,                             \
+  .task_pi_top_task = 0x890, .task_pi_blocked_on = 0x898,                      \
+  .task_pid = 0x5C8, .task_tgid = 0x5CC,                                       \
+  .task_atomic_flags = 0x590, .task_real_cred = 0x778, .task_cred = 0x780,     \
+  .task_comm = 0x790, .task_tasks = 0x4C8, .task_seccomp = 0x848,              \
+  .compact_waiter = 1, .mm_struct_sz = 0x3C0
+
 static const struct kernel_offsets known_offsets[] = {
 /* Add new kernels by creating src/kernels/<uname-release>/offsets.h */
+#include "5.10.149-android12-9-00001-gda3d81545d1d-ab9545656/offsets.h"
 #include "6.1.118-android14-11-ga3b9c44908dd-ab13320413/offsets.h"
 #include "6.1.118-android14-11-gca0ef6d17716-ab13624819/offsets.h"
 #include "6.1.138-android14-11-g0c3d559bcd85-ab14529422/offsets.h"

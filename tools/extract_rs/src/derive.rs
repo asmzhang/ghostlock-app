@@ -134,7 +134,7 @@ pub fn derive_pselect_layout(
     kernel: &[u8],
     symbols: &RelSymbols,
     sorted_offsets: &[u64],
-    btf: &Btf,
+    waiter_fields: (u64, u64),
     route_nfds: u64,
 ) -> Result<PselectLayout> {
     let mut names: Vec<(&str, &str)> = vec![
@@ -225,17 +225,15 @@ pub fn derive_pselect_layout(
 
     // 6.6 names the rb_nodes tree/pi_tree; 6.1 calls them
     // tree_entry/pi_tree_entry (same offsets in the struct).
-    let pi_tree = btf
-        .field("rt_mutex_waiter", "pi_tree")
-        .or_else(|| btf.field("rt_mutex_waiter", "pi_tree_entry"));
-    let wake_state = btf.field("rt_mutex_waiter", "wake_state");
-    if pi_tree.is_none() || wake_state.is_none() {
+    // 5.10 has no wake_state at all; callers fall back to deadline (0x48)
+    // as the second cross-validation field (init_waiter zeroes it).
+    // waiter_fields = (pi_tree_entry, cross-validation field offset).
+    let (pi_tree, wake_state) = waiter_fields;
+    if pi_tree == 0 || wake_state == 0 {
         return Err(ExtractError::new(
-            "BTF rt_mutex_waiter.pi_tree/wake_state missing",
+            "waiter fields pi_tree/deadline missing for pselect derivation",
         ));
     }
-    let pi_tree = pi_tree.unwrap() as u64;
-    let wake_state = wake_state.unwrap() as u64;
 
     let mut waiter_candidates: Vec<(String, u64)> = Vec::new();
     for (reg, imm) in add_sp_immediates(&dis["futex_wait"]) {
