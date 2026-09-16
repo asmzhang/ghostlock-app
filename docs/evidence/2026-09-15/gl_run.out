@@ -1,0 +1,548 @@
+=== TUNE round 1/30 shift=-2 core=4/5 uptime=1019.19 17:02:15 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=1 safe=0 hit=0
+=== TUNE round 2/30 shift=-2 core=4/5 uptime=? 17:02:42 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=2 safe=0 hit=0
+=== TUNE round 3/30 shift=-2 core=4/5 uptime=? 17:03:50 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=3 safe=0 hit=0
+=== TUNE round 4/30 shift=-2 core=4/5 uptime=? 17:04:55 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=4 safe=0 hit=0
+=== TUNE round 5/30 shift=-2 core=4/5 uptime=? 17:06:00 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=5 safe=0 hit=0
+=== TUNE round 6/30 shift=-2 core=4/5 uptime=? 17:07:05 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=6 safe=0 hit=0
+=== TUNE round 7/30 shift=-2 core=4/5 uptime=? 17:08:10 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=7 safe=0 hit=0
+=== TUNE round 8/30 shift=-2 core=4/5 uptime=? 17:09:15 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=8 safe=0 hit=0
+=== TUNE round 9/30 shift=-2 core=4/5 uptime=? 17:10:20 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=9 safe=0 hit=0
+=== TUNE round 10/30 shift=-2 core=4/5 uptime=? 17:11:28 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=10 safe=0 hit=0
+=== TUNE round 11/30 shift=-2 core=4/5 uptime=? 17:12:40 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=11 safe=0 hit=0
+=== TUNE round 12/30 shift=-2 core=4/5 uptime=? 17:13:45 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=12 safe=0 hit=0
+=== TUNE round 13/30 shift=-2 core=4/5 uptime=? 17:14:53 ===
+stage ok (round verified after rollback window)
+result: PANIC (fired, died) — cumulative panic=13 safe=0 hit=0
+=== TUNE round 14/30 shift=-2 core=4/5 uptime=? 17:16:03 ===
+stage ok (round verified after rollback window)
+=== SUCCESS (hit 1) — params locked to <ARCHIVE_DIR>/gl_tuned.env; verifying module + APatch ===
+--- /proc/modules ---
+kernelpatch 126976 0 - Live 0x0000000000000000 (O)
+--- klog (in-process loader diagnostics, /sdcard copy is shell-readable) ---
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+module_loaded=1
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=8922 uid=0 gid=-402155008
+HOLD tick 30s alive
+HOLD tick 60s alive
+HOLD tick 90s alive
+HOLD tick 120s alive
+HOLD tick 150s alive
+HOLD end
+module_loaded=1
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=8969 uid=0 gid=773237888
+HOLD tick 30s alive
+HOLD tick 60s alive
+HOLD tick 90s alive
+HOLD tick 120s alive
+HOLD tick 150s alive
+HOLD tick 180s alive
+HOLD tick 210s alive
+HOLD tick 240s alive
+HOLD tick 270s alive
+HOLD tick 300s alive
+HOLD end
+module_loaded=1
+post-load: hold finished, exiting cleanly (no setgid, no exec)
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=8932 uid=0 gid=-770677760
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=9567 uid=0 gid=-983702528
+HOLD tick 30s alive
+HOLD tick 60s alive
+HOLD tick 90s alive
+HOLD tick 120s alive
+HOLD tick 150s alive
+HOLD tick 180s alive
+HOLD tick 210s alive
+HOLD tick 240s alive
+HOLD tick 270s alive
+HOLD tick 300s alive
+HOLD end
+module_loaded=1
+post-load: hold finished, exiting cleanly (no setgid, no exec)
+[0.000] U8 leak child exit: mm_struct=ffffff881663ecc0 state=2 (verified=1)
+[0.000] U8 snitch verdict mm_struct=ffffff881663ecc0 state=2
+[0.004] P1 write mode=2 target=ffffff885a121a00 pc=ffffff885a1219f8 right=ffffff802a7a0930 left=0000000000000000 child_node=1
+[0.083] W2: cred ENTER route: target=ffffff885a121a00 mode=2 leaf=0 page=ffffff8816638000 fake_lock=ffffff8816638000 fake_w0=ffffff8816638300 fake_task=ffffff8816638400 tcp=0
+[0.087] R2 threads created
+[0.089] R3 waiter_waiting=1 owner_started=1 route_done=0
+[0.191] R5 trigger ret=-1 errno=35 | pre f_wait=0 f_pi_target=0x31c4 f_pi_chain=0x800031c2 | post f_wait=0 f_pi_target=0x800031c4 | addrs 00000064a9cb0864 00000064a9db1044 | step=0 calls=0 success=0
+[0.195] R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+[1.213] R7 t=1s step=0 calls=0 success=0 route_done=0
+[2.237] R7 t=2s step=0 calls=0 success=0 route_done=0
+[3.260] R7 t=3s step=0 calls=0 success=0 route_done=0
+[4.284] R7 t=4s step=0 calls=0 success=0 route_done=0
+[5.308] R7 t=5s step=0 calls=0 success=0 route_done=0
+[6.331] R7 t=6s step=0 calls=0 success=0 route_done=0
+[7.355] R7 t=7s step=0 calls=0 success=0 route_done=0
+[8.089] W1 waiter WAIT_REQUEUE_PI returned ret=-1 errno=110 f_wait=0 (self=12738)
+[8.148] C1 consumer first call seq=1 tid=12738
+[0.000] U8 leak child exit: mm_struct=ffffff803cccb840 state=2 (verified=1)
+[0.000] U8 snitch verdict mm_struct=ffffff803cccb840 state=2
+[0.006] P1 write mode=1 target=ffffff802aa2fb98 pc=ffffff802aa2fb90 right=0000000000000000 left=0000000000000000 child_node=0
+[0.079] W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=1 page=ffffff803ccc8000 fake_lock=ffffff803ccc8000 fake_w0=ffffff803ccc8300 fake_task=ffffff803ccc8400 tcp=0
+[0.084] R2 threads created
+[0.086] R3 waiter_waiting=1 owner_started=1 route_done=0
+[0.187] R5 trigger ret=-1 errno=35 | pre f_wait=0 f_pi_target=0x3136 f_pi_chain=0x80003135 | post f_wait=0 f_pi_target=0x80003136 | addrs 0000005d03748864 0000005d03849044 | step=0 calls=0 success=0
+[0.192] R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+[1.199] R7 t=1s step=0 calls=0 success=0 route_done=0
+[2.215] R7 t=2s step=0 calls=0 success=0 route_done=0
+[3.230] R7 t=3s step=0 calls=0 success=0 route_done=0
+[4.244] R7 t=4s step=0 calls=0 success=0 route_done=0
+[5.258] R7 t=5s step=0 calls=0 success=0 route_done=0
+[6.274] R7 t=6s step=0 calls=0 success=0 route_done=0
+[7.289] R7 t=7s step=0 calls=0 success=0 route_done=0
+[8.085] W1 waiter WAIT_REQUEUE_PI returned ret=-1 errno=110 f_wait=0 (self=12597)
+[8.140] C1 consumer first call seq=1 tid=12597
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88b8788000 fake_lock=ffffff88b8788000 fake_w0=ffffff88b8788300 fake_task=ffffff88b8788400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=00000063ac59e5ec f_pi_target=00000063ac59e5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88b8788000 fake_lock=ffffff88b8788000 fake_w0=ffffff88b8788300 fake_task=ffffff88b8788400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W2: cred ENTER route: target=ffffff887a410780 mode=2 leaf=0 page=ffffff8835508000 fake_lock=ffffff8835508000 fake_w0=ffffff8835508300 fake_task=ffffff8835508400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=00000063ac59e5ec f_pi_target=00000063ac59e5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88989d8000 fake_lock=ffffff88989d8000 fake_w0=ffffff88989d8300 fake_task=ffffff88989d8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000583a17a5ec f_pi_target=000000583a17a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88b99a8000 fake_lock=ffffff88b99a8000 fake_w0=ffffff88b99a8300 fake_task=ffffff88b99a8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=0000005fbbbe65ec f_pi_target=0000005fbbbe65f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88b99a8000 fake_lock=ffffff88b99a8000 fake_w0=ffffff88b99a8300 fake_task=ffffff88b99a8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87e6440000 fake_lock=ffffff87e6440000 fake_w0=ffffff87e6440300 fake_task=ffffff87e6440400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=0000006326a765ec f_pi_target=0000006326a765f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88ca9d8000 fake_lock=ffffff88ca9d8000 fake_w0=ffffff88ca9d8300 fake_task=ffffff88ca9d8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=00000063867ba5ec f_pi_target=00000063867ba5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8833348000 fake_lock=ffffff8833348000 fake_w0=ffffff8833348300 fake_task=ffffff8833348400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8833348000 fake_lock=ffffff8833348000 fake_w0=ffffff8833348300 fake_task=ffffff8833348400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87e69e0000 fake_lock=ffffff87e69e0000 fake_w0=ffffff87e69e0300 fake_task=ffffff87e69e0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87e69e0000 fake_lock=ffffff87e69e0000 fake_w0=ffffff87e69e0300 fake_task=ffffff87e69e0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88ee0d0000 fake_lock=ffffff88ee0d0000 fake_w0=ffffff88ee0d0300 fake_task=ffffff88ee0d0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88ee0d0000 fake_lock=ffffff88ee0d0000 fake_w0=ffffff88ee0d0300 fake_task=ffffff88ee0d0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88bd0c0000 fake_lock=ffffff88bd0c0000 fake_w0=ffffff88bd0c0300 fake_task=ffffff88bd0c0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88bd0c0000 fake_lock=ffffff88bd0c0000 fake_w0=ffffff88bd0c0300 fake_task=ffffff88bd0c0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8806dd0000 fake_lock=ffffff8806dd0000 fake_w0=ffffff8806dd0300 fake_task=ffffff8806dd0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8806dd0000 fake_lock=ffffff8806dd0000 fake_w0=ffffff8806dd0300 fake_task=ffffff8806dd0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87f35a0000 fake_lock=ffffff87f35a0000 fake_w0=ffffff87f35a0300 fake_task=ffffff87f35a0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87f35a0000 fake_lock=ffffff87f35a0000 fake_w0=ffffff87f35a0300 fake_task=ffffff87f35a0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff885fbf0000 fake_lock=ffffff885fbf0000 fake_w0=ffffff885fbf0300 fake_task=ffffff885fbf0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff885fbf0000 fake_lock=ffffff885fbf0000 fake_w0=ffffff885fbf0300 fake_task=ffffff885fbf0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87e04d8000 fake_lock=ffffff87e04d8000 fake_w0=ffffff87e04d8300 fake_task=ffffff87e04d8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87e04d8000 fake_lock=ffffff87e04d8000 fake_w0=ffffff87e04d8300 fake_task=ffffff87e04d8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff883a550000 fake_lock=ffffff883a550000 fake_w0=ffffff883a550300 fake_task=ffffff883a550400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff883a550000 fake_lock=ffffff883a550000 fake_w0=ffffff883a550300 fake_task=ffffff883a550400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff889cbc0000 fake_lock=ffffff889cbc0000 fake_w0=ffffff889cbc0300 fake_task=ffffff889cbc0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff889cbc0000 fake_lock=ffffff889cbc0000 fake_w0=ffffff889cbc0300 fake_task=ffffff889cbc0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87f5ad0000 fake_lock=ffffff87f5ad0000 fake_w0=ffffff87f5ad0300 fake_task=ffffff87f5ad0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87f5ad0000 fake_lock=ffffff87f5ad0000 fake_w0=ffffff87f5ad0300 fake_task=ffffff87f5ad0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8882fa8000 fake_lock=ffffff8882fa8000 fake_w0=ffffff8882fa8300 fake_task=ffffff8882fa8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8882fa8000 fake_lock=ffffff8882fa8000 fake_w0=ffffff8882fa8300 fake_task=ffffff8882fa8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87f5a58000 fake_lock=ffffff87f5a58000 fake_w0=ffffff87f5a58300 fake_task=ffffff87f5a58400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87f5a58000 fake_lock=ffffff87f5a58000 fake_w0=ffffff87f5a58300 fake_task=ffffff87f5a58400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87ff230000 fake_lock=ffffff87ff230000 fake_w0=ffffff87ff230300 fake_task=ffffff87ff230400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87ff230000 fake_lock=ffffff87ff230000 fake_w0=ffffff87ff230300 fake_task=ffffff87ff230400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88301e0000 fake_lock=ffffff88301e0000 fake_w0=ffffff88301e0300 fake_task=ffffff88301e0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000597e05a5ec f_pi_target=000000597e05a5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88301e0000 fake_lock=ffffff88301e0000 fake_w0=ffffff88301e0300 fake_task=ffffff88301e0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88ee0d0000 fake_lock=ffffff88ee0d0000 fake_w0=ffffff88ee0d0300 fake_task=ffffff88ee0d0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=0000005af51565ec f_pi_target=0000005af51565f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88a1170000 fake_lock=ffffff88a1170000 fake_w0=ffffff88a1170300 fake_task=ffffff88a1170400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88a1170000 fake_lock=ffffff88a1170000 fake_w0=ffffff88a1170300 fake_task=ffffff88a1170400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8054648000 fake_lock=ffffff8054648000 fake_w0=ffffff8054648300 fake_task=ffffff8054648400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8054648000 fake_lock=ffffff8054648000 fake_w0=ffffff8054648300 fake_task=ffffff8054648400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87dcab0000 fake_lock=ffffff87dcab0000 fake_w0=ffffff87dcab0300 fake_task=ffffff87dcab0400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87dcab0000 fake_lock=ffffff87dcab0000 fake_w0=ffffff87dcab0300 fake_task=ffffff87dcab0400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8952568000 fake_lock=ffffff8952568000 fake_w0=ffffff8952568300 fake_task=ffffff8952568400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8952568000 fake_lock=ffffff8952568000 fake_w0=ffffff8952568300 fake_task=ffffff8952568400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8952168000 fake_lock=ffffff8952168000 fake_w0=ffffff8952168300 fake_task=ffffff8952168400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8952168000 fake_lock=ffffff8952168000 fake_w0=ffffff8952168300 fake_task=ffffff8952168400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87e20b8000 fake_lock=ffffff87e20b8000 fake_w0=ffffff87e20b8300 fake_task=ffffff87e20b8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87e20b8000 fake_lock=ffffff87e20b8000 fake_w0=ffffff87e20b8300 fake_task=ffffff87e20b8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88ecab8000 fake_lock=ffffff88ecab8000 fake_w0=ffffff88ecab8300 fake_task=ffffff88ecab8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88ecab8000 fake_lock=ffffff88ecab8000 fake_w0=ffffff88ecab8300 fake_task=ffffff88ecab8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff87eb728000 fake_lock=ffffff87eb728000 fake_w0=ffffff87eb728300 fake_task=ffffff87eb728400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff87eb728000 fake_lock=ffffff87eb728000 fake_w0=ffffff87eb728300 fake_task=ffffff87eb728400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8954358000 fake_lock=ffffff8954358000 fake_w0=ffffff8954358300 fake_task=ffffff8954358400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8954358000 fake_lock=ffffff8954358000 fake_w0=ffffff8954358300 fake_task=ffffff8954358400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8810cf8000 fake_lock=ffffff8810cf8000 fake_w0=ffffff8810cf8300 fake_task=ffffff8810cf8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8810cf8000 fake_lock=ffffff8810cf8000 fake_w0=ffffff8810cf8300 fake_task=ffffff8810cf8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff885ecb8000 fake_lock=ffffff885ecb8000 fake_w0=ffffff885ecb8300 fake_task=ffffff885ecb8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff885ecb8000 fake_lock=ffffff885ecb8000 fake_w0=ffffff885ecb8300 fake_task=ffffff885ecb8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8805c40000 fake_lock=ffffff8805c40000 fake_w0=ffffff8805c40300 fake_task=ffffff8805c40400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8805c40000 fake_lock=ffffff8805c40000 fake_w0=ffffff8805c40300 fake_task=ffffff8805c40400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8951ec8000 fake_lock=ffffff8951ec8000 fake_w0=ffffff8951ec8300 fake_task=ffffff8951ec8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8951ec8000 fake_lock=ffffff8951ec8000 fake_w0=ffffff8951ec8300 fake_task=ffffff8951ec8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff88e45a8000 fake_lock=ffffff88e45a8000 fake_w0=ffffff88e45a8300 fake_task=ffffff88e45a8400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88e45a8000 fake_lock=ffffff88e45a8000 fake_w0=ffffff88e45a8300 fake_task=ffffff88e45a8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8800120000 fake_lock=ffffff8800120000 fake_w0=ffffff8800120300 fake_task=ffffff8800120400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8800120000 fake_lock=ffffff8800120000 fake_w0=ffffff8800120300 fake_task=ffffff8800120400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=8996 uid=0 gid=-178658304
+HOLD tick 30s alive
+HOLD tick 60s alive
+HOLD tick 90s alive
+HOLD tick 120s alive
+HOLD tick 150s alive
+HOLD tick 180s alive
+HOLD tick 210s alive
+HOLD tick 240s alive
+HOLD tick 270s alive
+HOLD tick 300s alive
+HOLD end
+module_loaded=1
+post-load: hold finished, exiting cleanly (no setgid, no exec)
+--- su (kpatch sucompat should answer immediately) ---
+uid=0(root) gid=0(root) groups=0(root),1004(input),1007(log),1011(adb),1015(sdcard_rw),1028(sdcard_r),1078(ext_data_rw),1079(ext_obb_rw),3001(net_bt_admin),3002(net_bt),3003(inet),3006(net_bw_stats),3009(readproc),3011(uhid),3012(readtracefs) context=u:r:magisk:s0
+--- root worker marker ---
+(none)
+=== TUNE done: hit=1 panic=13 safe=0 over 30 rounds 17:22:28 ===

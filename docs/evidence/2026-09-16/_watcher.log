@@ -1,0 +1,55 @@
+watcher start 10:01:31 — polling /proc/modules directly
+[10:50:05] *** MODULE DETECTED in /proc/modules ***
+--- su -c id (kpatch sucompat) ---
+id: gid 1169852288: No such file or directory
+--- /proc/modules entry ---
+kernelpatch 126976 0 - Live 0x0000000000000000 (O)
+--- /sdcard/ghostlock_klog ---
+HOLD begin pid=8996 uid=0 gid=-178658304
+HOLD tick 30s alive
+HOLD tick 60s alive
+HOLD tick 90s alive
+HOLD tick 120s alive
+HOLD tick 150s alive
+HOLD tick 180s alive
+HOLD tick 210s alive
+HOLD tick 240s alive
+HOLD tick 270s alive
+HOLD tick 300s alive
+HOLD end
+module_loaded=1
+post-load: hold finished, exiting cleanly (no setgid, no exec)
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+init_module rc=0 errno=0
+SELF-W2: relocate+init_module rc=0
+HOLD begin pid=8589 uid=0 gid=1169852288
+--- kpatch sysfs ---
+total 0
+drwxr-xr-x   5 root root    0 2026-09-16 10:50 .
+drwxr-xr-x 546 root root    0 2026-09-16 10:50 ..
+--- APatch manager ---
+package:me.bmax.apatch
+ls: /data/adb/ap/: Permission denied
+[10:50:06] verification recorded; tracking module residency
+[10:50:11] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:17] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:22] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:27] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:33] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:38] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:43] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:49] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:50:54] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:00] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:05] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:10] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:16] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:21] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:26] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:32] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:37] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:42] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:48] loaded=1 su=[id: gid 1169852288: No such file or directory]
+[10:51:53] loaded=1 su=[id: gid 1169852288: No such file or directory]

@@ -1,0 +1,55 @@
+watcher start 17:02:22 — polling /proc/modules directly
+[17:16:58] *** MODULE DETECTED in /proc/modules ***
+--- su -c id (kpatch sucompat) ---
+id: gid 4116308992: No such file or directory
+--- /proc/modules entry ---
+kernelpatch 172032 1 - Loading 0x0000000000000000 (O+)
+--- /sdcard/ghostlock_klog ---
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff88e45a8000 fake_lock=ffffff88e45a8000 fake_w0=ffffff88e45a8300 fake_task=ffffff88e45a8400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+W1: SELinux ENTER route: target=ffffff802aa2fb98 mode=1 leaf=0 page=ffffff8800120000 fake_lock=ffffff8800120000 fake_w0=ffffff8800120300 fake_task=ffffff8800120400 tcp=0
+R2 threads created
+R3 waiter_waiting=1 owner_started=1 route_done=0
+R4 pre-trigger f_wait=000000592b3ee5ec f_pi_target=000000592b3ee5f0
+R5 post-trigger errno=35 step=0 calls=0 success=0
+R6 step=0 calls=0 success=0 errno=0 waiter_waiting=1
+R6b route_done step=0 calls=1 success=1
+R7 joined
+W1: SELinux target=ffffff802aa2fb98 mode=1 leaf=0 routed=1
+W1: SELinux page=ffffff8800120000 fake_lock=ffffff8800120000 fake_w0=ffffff8800120300 fake_task=ffffff8800120400
+W1: SELinux route: tcp=0 nowrite=(unset) owner=(unset) child_node=1
+SELF-W2: relocate+load /data/local/tmp/kernelpatch.ko
+undefined=62
+resolved=62/62
+--- kpatch sysfs ---
+total 0
+drwxr-xr-x   5 root root    0 2026-09-15 17:16 .
+drwxr-xr-x 546 root root    0 2026-09-15 17:16 ..
+--- APatch manager ---
+package:me.bmax.apatch
+ls: /data/adb/ap/: Permission denied
+[17:16:59] verification recorded; tracking module residency
+[17:17:04] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:10] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:15] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:21] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:26] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:31] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:37] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:42] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:48] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:53] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:17:58] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:04] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:09] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:14] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:20] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:25] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:30] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:36] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:41] loaded=1 su=[id: gid 4116308992: No such file or directory]
+[17:18:47] loaded=1 su=[id: gid 4116308992: No such file or directory]
