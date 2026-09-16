@@ -77,9 +77,13 @@ struct kernel_offsets {
 static const struct kernel_offsets known_offsets[] = {
 /* Add new kernels by creating src/kernels/<uname-release>/offsets.h */
 #include "5.10.149-android12-9-00001-gda3d81545d1d-ab9545656/offsets.h"
+#include "6.1.115-android14-11-ga2521ca27699-ab13294383/offsets.h"
 #include "6.1.118-android14-11-ga3b9c44908dd-ab13320413/offsets.h"
 #include "6.1.118-android14-11-gca0ef6d17716-ab13624819/offsets.h"
 #include "6.1.138-android14-11-g0c3d559bcd85-ab14529422/offsets.h"
+#include "6.1.138-android14-11-g6ab8c9a86a33-ab14396278/offsets.h"
+#include "6.1.138-android14-11-g44bda9e8f6e9-ab13792638/offsets.h"
+#include "6.1.138-android14-11-g965475777129-mi/offsets.h"
 #include "6.1.145-android14-11-g09f1c0074ad7-ab14226177/offsets.h"
 #include "6.1.145-android14-11-g74d1702dab4d-ab14669069/offsets.h"
 #include "6.1.145-android14-11-geaa643a2c0ee-ab14763719/offsets.h"
@@ -99,6 +103,7 @@ static const struct kernel_offsets known_offsets[] = {
 #include "6.6.102-android15-8-gb01b41c2647c-ab15574720-4k/offsets.h"
 #include "6.6.102-android15-8-gfe76d1bc97fd-ab14689815-4k/offsets.h"
 #include "6.6.118-android15-8-g2e6b9c3812c5-ab15114928-4k/offsets.h"
+#include "6.6.118-android15-8-g21be90ecfb5e-ab15480137-4k/offsets.h"
 #include "6.6.118-android15-8-g93e223c276e7-abogki500782043-4k/offsets.h"
 #include "6.6.118-android15-8-g608a629fedf7-ab15154340-4k/offsets.h"
 #include "6.6.118-android15-8-gbf8cd367de7a-ab15314822-4k/offsets.h"
@@ -115,6 +120,7 @@ static const struct kernel_offsets known_offsets[] = {
 #include "6.12.30-android16-5-g6e872b4863d6-ab13847919-4k/offsets.h"
 #include "6.12.38-android16-5-g1d46253471dd-ab15048002-4k/offsets.h"
 #include "6.12.38-android16-5-g3c4da6410bcb-ab13872285-4k/offsets.h"
+#include "6.12.38-android16-5-g74ad46052215-ab14494108-4k/offsets.h"
 #include "6.12.38-android16-5-g844001fb8721-ab14552068-4k/offsets.h"
   { .uname_r = NULL }
 };

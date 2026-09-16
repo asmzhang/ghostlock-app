@@ -118,11 +118,14 @@ private fun GhostlockRoute(
             override fun onExportOffsets() = viewModel.exportOffsets()
             override fun onCpuPairSelected(index: Int) = viewModel.selectCpuPair(index)
             override fun onSafeModeChanged(enabled: Boolean) = viewModel.toggleSafeMode(enabled)
+            override fun onTcpRouteChanged(enabled: Boolean) = viewModel.toggleTcpRoute(enabled)
             override fun onDialogItemSelected(index: Int) = viewModel.onDialogItemSelected(index)
             override fun onDialogInputChange(value: String) = viewModel.onDialogInputChange(value)
             override fun onDialogConfirm(value: String) = viewModel.onDialogConfirm(value)
             override fun onDialogDismiss() = viewModel.onDialogDismiss()
             override fun onDialogDismissFinished() = viewModel.onDialogDismissFinished()
+            override fun onOverwriteConfirm() = viewModel.onOverwriteConfirm()
+            override fun onOverwriteDismiss() = viewModel.onOverwriteDismiss()
         },
     )
 }

