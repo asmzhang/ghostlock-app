@@ -11,7 +11,9 @@ src/scripts/root_template.sh 并在构建期转成 C 头。这个改写必须是
 用法
 ----
     python tools/verify_template.py [基线引用]
-默认基线引用：verified-2026-09-11（本次重构前打的可工作 tag）。
+默认基线引用：347dfec8fa6cd5c204a693565f7e9fd1482ee6ca（2026-09-11 "root achieved" 提交）。
+注：原先默认引用 tag `verified-2026-09-11`，该 tag 已于 2026-09-16 按决策删除，故改用其指向的提交
+（tag 对象 cdc5eba 仍在对象库，可用 `git tag -a verified-2026-09-11 347dfec -m "<原消息>"` 重建）。
 """
 import re
 import subprocess
@@ -55,7 +57,7 @@ def extract_from_c(text: str) -> str:
 
 
 def main():
-    ref = sys.argv[1] if len(sys.argv) > 1 else "verified-2026-09-11"
+    ref = sys.argv[1] if len(sys.argv) > 1 else "347dfec8fa6cd5c204a693565f7e9fd1482ee6ca"
 
     try:
         old_c = subprocess.run(
