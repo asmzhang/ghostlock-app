@@ -121,7 +121,7 @@ __rb_change_child(node, tmp, parent, root);
 
 | # | 坑 | 症状 | 处置 |
 |---|---|---|---|
-| 1 | **adb.exe 不认 POSIX 路径** | `adb push /d/...` 报 `cannot stat`，脚本里被 `>/dev/null` 吞掉 → **静默失败** | 用 Windows 盘符路径 `D://...` 或相对路径 |
+| 1 | **adb.exe 不认 POSIX 路径** | `adb push /d/...` 报 `cannot stat`，脚本里被 `>/dev/null` 吞掉 → **静默失败** | 用 Windows 盘符路径 `D:/...` 或相对路径 |
 | 2 | **`/data/local/tmp` 重启回滚** | 新推的二进制被刷回旧快照；日志丢失 | 每次运行前 `push + md5sum 校验 + 重推`；证据写 `/sdcard` |
 | 3 | oops 全通道被封 | pstore/last_kmsg/dmesg 普通权限均不可读 | 先拿 root，再走 pstore |
 | 4 | `logcat -b kernel` 恒空 | logd 未接收 kmsg | 放弃该通道 |

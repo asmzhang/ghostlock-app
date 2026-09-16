@@ -13,10 +13,16 @@ Usage:
   btf_dump.py show task_struct [--all]   # member offsets (bytes)
   btf_dump.py member task_struct pi_lock
 """
+import os
 import struct
 import sys
 
-IMAGE = r"<REFS_DIR>/vivo/Image-5.15.178-android13-8-00005-g14ee4828e57f-ab13224150_A13-era"
+# 素材路径不写进仓库：用环境变量 VIVO_IMAGE 指定内核 Image。
+# <REFS_DIR> 等占位符的含义见 ASSETS_INDEX.md「占位符约定」一节。
+IMAGE = os.environ.get(
+    "VIVO_IMAGE",
+    "<REFS_DIR>/vivo/Image-5.15.178-android13-8-00005-g14ee4828e57f-ab13224150_A13-era",
+)
 BTF_VA = 0xFFFFFFC00A2C9874
 TEXT_VA = 0xFFFFFFC008000000
 BTF_FILE = None  # set by --btf <file>: read a raw BTF blob instead of the Image

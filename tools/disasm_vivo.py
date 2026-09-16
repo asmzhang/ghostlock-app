@@ -4,16 +4,21 @@ file_off = VA - 0xffffffc008000000  (Image file offset 0 == _text)
 Usage: python disasm_vivo.py <sym> [len]
        python disasm_vivo.py 0xffffffc0082948a4 0x120
 """
-import sys, re
+import os, sys, re
 from capstone import Cs, CS_ARCH_ARM64, CS_MODE_LITTLE_ENDIAN
 
 TEXT_VA = 0xFFFFFFC008000000
-IMAGE = r"<REFS_DIR>/vivo/Image-5.15.178-android13-8-00005-g14ee4828e57f-ab13224150_A13-era"
+# 素材路径不写进仓库：用环境变量指定（<REFS_DIR> 含义见 ASSETS_INDEX.md「占位符约定」）
+IMAGE = os.environ.get(
+    "VIVO_IMAGE",
+    "<REFS_DIR>/vivo/Image-5.15.178-android13-8-00005-g14ee4828e57f-ab13224150_A13-era",
+)
+SYMS = os.environ.get("VIVO_SYMS", "<REFS_DIR>/vivo/vivo_syms.txt")
 
 def load_syms():
     syms = {}
     pat = re.compile(r"^([0-9a-f]{16})\s+(\S+)$")
-    with open(r"<REFS_DIR>/vivo/vivo_syms.txt") as f:
+    with open(SYMS) as f:
         for line in f:
             m = pat.match(line.strip())
             if m:

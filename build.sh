@@ -39,7 +39,7 @@ if [ -z "$SDK_ROOT" ] && [ -f "$ROOT/local.properties" ]; then
         | head -1 | tr -d '\r' | sed -E 's/\\\\/\\/g; s/\\:/:/g; s|\\|/|g')"
 fi
 if [ -z "$SDK_ROOT" ] && [ -n "${LOCALAPPDATA:-}" ]; then
-    # Git Bash 里 LOCALAPPDATA 是反斜杠形式（<HOME>\...），转成 POSIX 再拼
+    # Git Bash 里 LOCALAPPDATA 是反斜杠形式（形如 <HOME>\...），转成 POSIX 再拼
     SDK_ROOT="$(printf '%s' "$LOCALAPPDATA" | sed -E 's|\\|/|g')/Android/Sdk"
 fi
 if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
