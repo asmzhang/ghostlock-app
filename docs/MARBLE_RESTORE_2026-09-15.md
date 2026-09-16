@@ -13,7 +13,8 @@
 | **构建命令** | 见 §2 第 ① 步（文档原样的 4 文件 clang；`make` 产出**同尺寸**，互为交叉验证）|
 | **参数** | `SHIFT=-2`、`CORE=4`、`CCORE=5`（锁在 **`<ARCHIVE_DIR>/gl_tuned.env`**）|
 | 关键 env | `GHOSTLOCK_SHIFT=-2 / CORE / CONSUMER_CORE / SKIP_POLICY_FIXUP=1 / LAYOUT=A / SELF_W2=1 / INSMOD_ONLY=1 / HOLD=1`（**无 `OWNER=fake`**，即 OWNER 空 = INIT_TASK）|
-| 轮数 | `ROUNDS=30`、`REBOOT_EVERY=0`（本轮命中在第 **14** 轮；历史命中在第 28/7/1/1/22/1 轮）|
+| 轮数 | `ROUNDS=30`、`REBOOT_EVERY=0`（本轮命中在第 **14** 轮；历史命中在第 28/7/1/1/22/1/14/43 轮）|
+| APatch 版本 | 管理器 **11224**（9a63e0f，签名 APK 归档 `_ghostlock_refs/`）+ .ko **0.13.8**；最低要求与匹配规则见 `APATCH_VERSIONS.md` |
 
 > ⚠️ `run.sh:115` 原本硬编码 `GHOSTLOCK_OWNER=fake`，**成功文档的六项 env 里没有它** ⇒
 > 已改为 `GHOSTLOCK_OWNER=${OWNER:-}`（默认空 = INIT_TASK，与当年一致）。备份：`run.sh.bak` / `run.sh.bak2`。

@@ -38,6 +38,7 @@
 | **命中判据** | `/proc/modules` 出现 `kernelpatch`（watcher）+ `su -c id` 显示 **gid 为垃圾值** |
 | **收尾判据** | soft-reboot 后 `su -c id` = `gid=0` + `u:r:magisk:s0` |
 | **当前分支** | **主仓 = `<REPO>`（2026-09-16 起以它为主）**：独立 clone，唯一分支 `my2`=`aec194e`（= aa37ddf 压平提交 + 主仓切换文档修订），独立构建指纹与归档成功件三方一致；旧仓 `root/ghostlock-app` = **冻结档案**（main 领先 origin/main 39 个未推送提交 + 32 项未提交改动，原地封存**勿用勿删**——历史文档引用它）；`my2` worktree 已注销退休（目录因句柄锁暂未物理删除，内有退休标记） |
+| **APatch 版本** | 管理器 **≥ versionCode 11224**（签名 APK 归档于 `_ghostlock_refs/`）+ .ko **0.13.8**（md5 `2b181dee…`）；规则：管理器内嵌参考 **≤ .ko 版本**（不必相等），参考 > .ko 即被拒 ⇒ 升级管理器不得超 .ko；机制与推导见 `APATCH_VERSIONS.md` |
 
 **marble 一遍过（新设备从零）**：见 `MARBLE_RESTORE_2026-09-15.md` §2 的 8 步。
 
