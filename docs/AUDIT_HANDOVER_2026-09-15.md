@@ -23,7 +23,7 @@
 |---|---|---|
 | `<WORK_DIR>/` | **工作区根**；harness 的 `WORK_DIR`（`tools/harness/env.sh` 里 `WORK_DIR=PROJECT_DIR/..`）| 放着 `gl_tuned.env`、`libksud.so`、`android12-5.10_kernelpatch.ko`（**harness 期望在这里**）、`root/`（旧树）、`my2/`（新主候选）、`_ghostlock_refs/`（固件素材，8GB 量级）、`_attic/`、`root/exp/`（历史实验脚本 90 个）|
 | `<ARCHIVE>/` | **旧工作树**（历史现场，含**未提交**的实验性改动）| HEAD=`8a82e2f`（**已知在 marble 上会秒崩 C1**，勿上真机）；docs 26 / tools 36 |
-| `<WORK_DIR>/my2/` | **新主候选**（**git worktree**，分支 `my2`，HEAD=`9f2affc`=上游）| 内容 = 上游 + **`347dfec` 的代码** + 蒸馏后的文档/工具；**32 项未提交** |
+| `<WORK_DIR>/my2/` | **新主候选**（**git worktree**，分支 `my2`，HEAD=`84087d0`=上游）| 内容 = 上游 + **`347dfec` 的代码** + 蒸馏后的文档/工具；**32 项未提交** |
 
 **关键基线**：`347dfec8fa6cd5c204a693565f7e9fd1482ee6ca`（2026-09-11 11:44:52，"root achieved"）——
 本项目**唯一被实测证明能出 root** 的代码状态。
@@ -37,7 +37,7 @@
 | 09-15 全天 | A35 载体调查（12 轮上机）→ 判定"所有可达载体都覆盖不到悬垂 waiter 的 `lock`(+0x38)" | `docs/CARRIER_EXHAUSTION_2026-09-15.md` |
 | 17:16 | **marble root 恢复**：`347dfec` 二进制第 **14** 轮命中 → soft-reboot → 终验 `gid=0`+magisk 域 | `docs/MARBLE_RESTORE_2026-09-15.md` |
 | 17:22 | 参数锁定到 `gl_tuned.env`（`SHIFT=-2 CORE=4 CCORE=5`）| `artifacts/2026-09-15/gl_tuned.env` |
-| 18:20+ | 建 `my2`（上基于游 `9f2affc`）→ 压平应用 `347dfec`（**不提交**）→ 搬到 `my2/docs` | §4 |
+| 18:20+ | 建 `my2`（上基于游 `84087d0`）→ 压平应用 `347dfec`（**不提交**）→ 搬到 `my2/docs` | §4 |
 | 18:30–18:56 | 多轮**蒸馏 + 精简**：写 `ESSENCE.md`（11 节）、剔除历史档案、补回方法/素材原文与通用工具 | §4 表 |
 
 ---
@@ -74,7 +74,7 @@ cd <WORK_DIR>/my2
 
 # 1) 分支与基线
 git rev-parse --abbrev-ref HEAD          # 期望: my2
-git log -1 --format='%h %s'              # 期望: 9f2affc Add a safe mode toggle that disables all KSU modules (#85)
+git log -1 --format='%h %s'              # 期望: 84087d0 Add a safe mode toggle that disables all KSU modules (#85)
 git rev-parse --verify 347dfec           # 期望: 347dfec8fa6cd5c204a693565f7e9fd1482ee6ca
 
 # 2) 代码完整性：与 347dfec 的差异必须为空
@@ -119,6 +119,6 @@ adb -s 3e6f1443 shell 'grep -c kernelpatch /proc/modules'   # 期望: 1
 
 ## 7. 未决事项（需用户决定）
 
-1. ✅ **已完成（2026-09-16 11:01）**：`my2` 61 个文件压成 1 个提交 `aa37ddf`（走 `git_commit_repair.sh` SOP，`REF_OK` + 另起命令验证通过；与 347dfec 的 diff 仍为空）；
-2. ✅ **已完成（2026-09-16 11:12）**：独立主仓 **`<REPO>`**（本地 clone，唯一分支 `my2`=`aa37ddf`，本地 `main` 已删除；独立构建 md5 与 my2/归档成功件三方一致）⇒ R1 解除；旧仓库转为**冻结档案**（39 个未推送提交 + 32 项未提交改动原地封存，勿用勿删）；
+1. ✅ **已完成（2026-09-16 11:01）**：`my2` 61 个文件压成 1 个提交 `4614c0b`（走 `git_commit_repair.sh` SOP，`REF_OK` + 另起命令验证通过；与 347dfec 的 diff 仍为空）；
+2. ✅ **已完成（2026-09-16 11:12）**：独立主仓 **`<REPO>`**（本地 clone，唯一分支 `my2`=`4614c0b`，本地 `main` 已删除；独立构建 md5 与 my2/归档成功件三方一致）⇒ R1 解除；旧仓库转为**冻结档案**（39 个未推送提交 + 32 项未提交改动原地封存，勿用勿删）；
 3. 仍未决：是否把 `exp/`（90 个历史脚本）也纳入档案。

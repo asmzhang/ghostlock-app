@@ -13,7 +13,7 @@
 
 | # | 断言 | 实测 | 判定 |
 |---|---|---|---|
-| 1 | 分支 `my2` / HEAD `9f2affc` / 基线 `347dfec8fa6…` / 未提交 32 项 | 全部一致 | ✅ |
+| 1 | 分支 `my2` / HEAD `84087d0` / 基线 `347dfec8fa6…` / 未提交 32 项 | 全部一致 | ✅ |
 | 2 | `git diff 347dfec -- src/ tools/extract_rs/` 为空；tree 113 = tracked 113 | 为空；113 = 113 | ✅ |
 | 3 | 可构建 + md5 `36430a2fbb2c42c243acf9a8698d169e`（100880 B）与归档一致 | **干净重建**（删 `ghostlock` 与全部 `.o/.d` 后重编）→ md5 与归档二进制逐字节一致 | ✅（注：首次 `make` 报 "up to date"，为严格起见已强制重建复验） |
 | 4 | docs 12 份 + archive 1；tools 20 项；ESSENCE 11 节（§0–§10） | 12 md + `archive/` + `evidence/`；20 项；`grep -c '^## '` = 11，§0..§10 | ✅ |
