@@ -298,3 +298,22 @@ Windows(Git Bash) / Linux / macOS 三者不一致；Python 只有一个运行时
 **删除后状态**：`tools/harness/` = `harness.py` + `ghostlock/{__init__,cli,config,device,flow,offline,plat}.py`，
 共 8 个文件，无 `.sh`、无 coreutils 依赖。文档中非历史部分（`config/*`、`PLAYBOOK`、`ADAPT_NEW_KERNEL`、
 `DEVICE_MARBLE`、`ESSENCE`）的旧脚本引用已同步改名（57 行）；带日期的历史文档保持原貌。
+
+### 7.10 构建/实验工具也 Python 化（同日）
+
+`tools/` 下最后三个功能型 shell 已移植，仓库中**宿主侧**不再有自研 shell：
+
+| 原脚本 | 新文件 | 说明 |
+|---|---|---|
+| `build.sh` | `tools/build.py` | 编译原生二进制，**不需要 GNU make**；NDK 探测复用 `plat.py`，读取 `harness.local.env`；`--md5` 顺带与 `build-pin` 基线对照。原 `build.sh` 实为旧树遗留（引用的 `src/scripts/root_template.sh`、`rootscript.c/klog.c/kmod.c` 在本树都不存在，源码清单也与 `Makefile` 不一致），已删除 |
+| `tools/build_apk.sh` | `tools/build_apk.py` | APK 构建：JDK25/JDK21（mise 或显式路径）、cargo GNU 工具链校验、rust target、SDK/NDK、依赖镜像检查 → 调 gradlew；`--check` 只做环境检查 |
+| `tools/probe_tcp_route.sh` | `harness.py probe` | 设备 TCP zerocopy 探测（编译 C 探针→推送→运行，读 `optlen` 回写值） |
+
+`check --build` 也改为调用 `tools/build.py`（不再依赖 make）。
+
+**边界说明**：设备侧脚本仍是 sh —— `run_obs.sh` 是 `#!/system/bin/sh`（push 到设备上执行），
+主程序生成的 root 脚本同理；Android 上没有 python3，这部分**必须**保持 sh。所谓"零 shell"指**宿主侧**。
+
+**验证**：`tools/build.py --md5` 编译产物 md5 `4bb625f8…` 与 `build-pin` 及 `Makefile` 产物**逐位一致**、零警告；
+`build_apk.py --check` 环境项全过（JDK25/21、GNU cargo、SDK）；`harness.py probe` 真机确认
+内核 struct 仅 `0x28` < 需要的 `0x38` ⇒ TCP 路线不可用、必须走 pselect（与 `DEVICE_MARBLE` 记录一致）。

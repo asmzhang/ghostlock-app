@@ -182,7 +182,7 @@ if (is_5_10_waiter()) return 0;   /* 强制 pselect */
 
 ```bash
 # 交叉编译后推到设备直接跑（无需 root）
-bash tools/probe_tcp_route.sh
+python3 tools/harness/harness.py probe
 ```
 
 探针只做一次 `getsockopt(TCP_ZEROCOPY_RECEIVE)`，读**内核对 `optlen` 的回写值** ——

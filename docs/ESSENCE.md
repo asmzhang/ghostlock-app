@@ -351,7 +351,7 @@ rt_mutex_dequeue_pi(owner, waiter);     // ← 真正的 8 字节写发生在这
 
 | 集合 | 位置 | 状态 |
 |---|---|---|
-| **当前有效** | `tools/harness/`（`run` 子命令 TUNE / `Watcher` 独立轮询 / `config.py` / `stride` 子命令 / `probe_tcp_route.sh` / `preflight.sh` / `stats.sh`）| ✅ 用这套 |
+| **当前有效** | `tools/harness/`（`run` 子命令 TUNE / `Watcher` 独立轮询 / `config.py` / `stride` 子命令 / `probe` / `preflight` / `stats` 子命令）| ✅ 用这套 |
 | **历史实验** | 旧工作树 `root/exp/`（数十个 `gl_*.sh`：tune/retry/oops_trap/cal/scan）| 📦 归档，查"试过什么"时翻 |
 | **已消失** | 根目录 `gl_tune.sh` / `_watcher.sh`（**未纳入 git**）| ❌ 已被 harness 取代 |
 

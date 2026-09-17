@@ -15,6 +15,7 @@
   stride     mm_struct stride 核对（slabinfo objsize vs offsets.h）
   retry      重启重试循环（默认 8 轮，W1_ATTEMPTS=3）
   scan       shift 扫描（默认 -4 -3 1 2 3 4）
+  probe      探测设备 TCP zerocopy 路线（决定走 TCP 还是 pselect）
 """
 from __future__ import annotations
 
@@ -82,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("command", nargs="?", default="run",
                    choices=["run", "root", "deps", "finish", "stats", "config",
-                            "check", "preflight", "harvest", "stride", "retry", "scan"])
+                            "check", "preflight", "harvest", "stride", "retry", "scan", "probe"])
     p.add_argument("--mode", choices=["tune", "use"], help="tune=探索锁参（默认）；use=读 gl_tuned.env 复跑")
     p.add_argument("--device", help="指定设备序列号（等价 GHOSTLOCK_DEV）")
     p.add_argument("--rounds", help="TUNE/retry 轮数（建议 ≥20）")
@@ -150,6 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         return offline.cmd_stride(cfg, expect=(args.args[0] if args.args else None))
     if args.command == "retry":
         return offline.cmd_retry(cfg, rounds=int(args.rounds) if args.rounds else 8)
+    if args.command == "probe":
+        return offline.cmd_probe(cfg)
     if args.command == "scan":
         shifts = None
         if args.shifts:

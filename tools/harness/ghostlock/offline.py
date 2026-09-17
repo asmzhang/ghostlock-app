@@ -341,13 +341,16 @@ def cmd_check(cfg: Config, do_build: bool = False) -> int:
 
     _say("4. 构建（可选，--build 触发）")
     if do_build:
-        res = plat.run(["make", "ghostlock"], timeout=600)
-        warns = len(re.findall(r"warning:", _echo_out(res)))
+        # 用 tools/build.py 编译（不需要 GNU make —— 换机后不一定装），并顺带与 build-pin 对照
+        res = plat.run([cfg.get("_PYTHON"), plat.as_arg(cfg.repo / "tools" / "build.py"), "--md5"], timeout=900)
+        out_text = _echo_out(res)
+        warns = len(re.findall(r"warning:", out_text))
         if res.returncode == 0 and warns == 0:
-            ok(f"构建通过、零警告（{plat.file_size(cfg.bin_path)} 字节）")
+            ok("构建通过、零警告")
+            print("  " + "\n  ".join(out_text.strip().splitlines()[-3:]))
         else:
             bad(f"构建 rc={res.returncode}，警告 {warns} 条")
-            print(_echo_out(res, tail=12))
+            print("\n".join(out_text.splitlines()[-12:]))
             fails += 1
     else:
         print("  （跳过；加 --build 可顺带编译并检查零警告）")
@@ -355,3 +358,53 @@ def cmd_check(cfg: Config, do_build: bool = False) -> int:
     _say("结果")
     print("  全部通过。" if fails == 0 else f"  {fails} 项未通过。")
     return fails
+
+
+# ---------------------------------------------------------------- probe（TCP 路由探测）
+def cmd_probe(cfg: Config, api: int = 35) -> int:
+    """探测设备上 TCP zerocopy 路线是否可用（决定 exploit 走 TCP 还是 pselect）。
+
+    原理：只做一次 getsockopt(TCP_ZEROCOPY_RECEIVE)，读内核对 optlen 的回写值——
+    内核里有 `if (len > sizeof(zc)) len = sizeof(zc);` 再 put_user(len, optlen)，
+    所以回写值就是内核真实的 sizeof(struct tcp_zerocopy_receive)。
+    exploit 需要写到 zc 偏移 0x28/0x30（waiter->task / waiter->lock），故该值需 >= 0x38。
+    注意：**不能靠编译期判断** —— 设备实测 5.10 上 NDK 头是 0x40、内核实际是 0x28。
+    """
+    ndk = cfg.ndk_root() or plat.find_ndk()
+    clang = plat.ndk_clang(ndk, api) or plat.ndk_clang(ndk, 34)
+    if not clang:
+        bad(f"NDK 里找不到 aarch64 clang（NDK={ndk or '未找到'}）：设 ANDROID_NDK_HOME / ANDROID_HOME")
+        return 1
+    src = cfg.repo / "tools" / "probe_tcp_route.c"
+    out = cfg.repo / "build" / "probe_tcp_route"
+    remote = f"{cfg.d_tmp}/probe_tcp_route"
+    if not src.is_file():
+        bad(f"找不到源码 {src}")
+        return 1
+
+    print(f"  · clang    {Path(clang).name}")
+    print(f"  · 产物     {out}")
+    if cfg.dry_run:
+        print("\nDRY-RUN：将执行")
+        print(f"  1) {clang} -O2 -o {out} {src}")
+        print(f"  2) adb push {out} → {remote} && chmod 755 && 运行，读取 optlen 回写值")
+        return 0
+
+    dev = _dev(cfg)
+    if not dev:
+        return 3
+    out.parent.mkdir(parents=True, exist_ok=True)
+    res = plat.run([plat.as_arg(clang), "-O2", "-o", plat.as_arg(out), plat.as_arg(src)], timeout=180)
+    if res.returncode != 0:
+        bad("编译失败")
+        print(_echo_out(res, tail=10))
+        return 1
+    ok(f"编译完成  {out}")
+    if not dev.push(out, remote, timeout=60):
+        bad("推送失败")
+        return 1
+    dev.shell(f"chmod 755 {remote}")
+    ok(f"已推送    {remote}")
+    _say("探测结果")
+    print(dev.shell(remote, timeout=60))
+    return 0

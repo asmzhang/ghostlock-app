@@ -46,7 +46,7 @@
 
 **结论：本机只能用 `pselect`，TCP zerocopy 路线不可用。**
 
-依据 —— 探针实测（`bash tools/probe_tcp_route.sh`，无需 root）：
+依据 —— 探针实测（`python3 tools/harness/harness.py probe`，无需 root）：
 
 ```
 sizeof(struct tcp_zerocopy_receive) 按 NDK 头文件 = 0x40
@@ -146,7 +146,7 @@ init.svc.apexd = stopped
 
 ## 9. 环境备忘
 
-- **SDK 路径**：`build.sh` 按 `ANDROID_HOME → NDK_ROOT → local.properties 的 sdk.dir
+- **SDK 路径**：`tools/build.py`（与 `harness.py` 共用 `plat.py` 探测）按 `ANDROID_NDK_HOME → ANDROID_HOME → 常见安装位置
   → LOCALAPPDATA` 依次解析。本机 `local.properties` 里是
   `sdk.dir=D\:\platform\Android\Sdk`，且该文件已被 `.gitignore` 忽略。
 - **开发机同时连着多台设备**时，`config.py` 按 `model:marble` 匹配选设备（`3e6f1443`）；

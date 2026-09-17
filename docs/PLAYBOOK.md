@@ -142,7 +142,7 @@ cd tools/extract_rs && cargo run -- <boot 镜像或 kallsyms>
 
 # 构建（本机没有 make，用等价脚本；它会先把脚本模板转成内嵌头）
 export ANDROID_HOME=<你的 Sdk>
-cd ../.. && bash build.sh
+cd ../.. && python3 tools/build.py --md5      # 编译并对照已验证基线
 ```
 
 构建必须**零警告** —— 警告在这个项目里通常意味着真实的类型/截断问题。
@@ -153,7 +153,7 @@ cd ../.. && bash build.sh
 python3 tools/harness/harness.py check.sh      # 18 项：编译/语法/模板无损/符号预检/产物未入库
 ```
 
-> 本机构建有两个坑已写进 `build.sh`：
+> 本机构建有两个坑已写进 `tools/build.py`：
 > ① 不能挑版本号最大的 NDK（高版本可能缺所需 API 的编译器入口），要选**真正含所需编译器**的；
 > ② Git Bash 下 `.cmd` 包装脚本没有执行位，`[ -x ...cmd ]` 会全部落空，应优先用无扩展名的 wrapper。
 
