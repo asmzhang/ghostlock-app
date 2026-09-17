@@ -1,12 +1,20 @@
 """命令行入口：python3 tools/harness/harness.py <command> [选项]
 
-命令：
-  run     跑 TUNE/USE 循环（默认）
-  root    一键：自检 → 后台监视 → run → 命中即停 → 收尾 → 终验
-  deps    依赖自足性检查（换机第一步）
-  finish  命中后的收尾（幂等，支持 --dry-run 只读预览）
-  stats   汇总轮次日志
-  config  打印最终生效配置（等价 --print-config）
+主流程：
+  run      跑 TUNE/USE 循环（默认）
+  root     一键：自检 → 后台监视 → run → 命中即停 → 收尾 → 终验
+  deps     依赖自足性检查（换机第一步）
+  finish   命中后的收尾（幂等，支持 --dry-run 只读预览）
+  stats    汇总轮次日志
+  config   打印最终生效配置（等价 --print-config）
+
+离线/探索工具：
+  check      仓库与环境自检（py_compile + deps + 产物 md5 对照；--build 顺带编译）
+  preflight  .ko 未定义符号 vs 设备 kallsyms 预检
+  harvest    命中后取证（把设备证据拉回本地，<tag> 默认 hit）
+  stride     mm_struct stride 核对（slabinfo objsize vs offsets.h）
+  retry      重启重试循环（默认 8 轮，W1_ATTEMPTS=3）
+  scan       shift 扫描（默认 -4 -3 1 2 3 4）
 """
 from __future__ import annotations
 
@@ -16,7 +24,7 @@ import re
 import sys
 
 from . import config as cfgmod
-from . import flow
+from . import flow, offline
 from .device import Device, detect_device, finish
 
 
@@ -73,16 +81,19 @@ def main(argv: list[str] | None = None) -> int:
         epilog=__doc__,
     )
     p.add_argument("command", nargs="?", default="run",
-                   choices=["run", "root", "deps", "finish", "stats", "config"])
+                   choices=["run", "root", "deps", "finish", "stats", "config",
+                            "check", "preflight", "harvest", "stride", "retry", "scan"])
     p.add_argument("--mode", choices=["tune", "use"], help="tune=探索锁参（默认）；use=读 gl_tuned.env 复跑")
     p.add_argument("--device", help="指定设备序列号（等价 GHOSTLOCK_DEV）")
-    p.add_argument("--rounds", help="TUNE 轮数（建议 ≥20）")
+    p.add_argument("--rounds", help="TUNE/retry 轮数（建议 ≥20）")
     p.add_argument("--shift", help="pselect waiter 字偏移（默认 -2）")
+    p.add_argument("--shifts", help="scan：要扫描的 SHIFT 列表，逗号分隔（默认 -4,-3,1,2,3,4）")
+    p.add_argument("--build", action="store_true", help="check：顺带编译并检查零警告")
     p.add_argument("--dry-run", action="store_true", help="只打印计划/命令，不碰设备")
     p.add_argument("--print-config", action="store_true", help="打印最终生效配置后退出")
     p.add_argument("--no-finish", action="store_true", help="root：命中后不自动收尾")
     p.add_argument("--skip-preflight", action="store_true", help="root：跳过 deps 自检")
-    p.add_argument("packages", nargs="*", help="finish：要授权的包名（默认取 GL_AP_PKGS）")
+    p.add_argument("args", nargs="*", help="finish=包名 / harvest=tag / stride=期望值")
     args = p.parse_args(argv)
 
     cli = {}
@@ -128,5 +139,20 @@ def main(argv: list[str] | None = None) -> int:
             print("[finish] 未找到 adb 设备", file=sys.stderr)
             return 3
         dev = Device(serial, cfg.get("_ADB"))
-        return finish(dev, cfg, dry_run=cfg.dry_run, pkgs=args.packages or None)
+        return finish(dev, cfg, dry_run=cfg.dry_run, pkgs=args.args or None)
+    if args.command == "check":
+        return offline.cmd_check(cfg, do_build=args.build)
+    if args.command == "preflight":
+        return offline.cmd_preflight(cfg)
+    if args.command == "harvest":
+        return offline.cmd_harvest(cfg, tag=(args.args[0] if args.args else "hit"))
+    if args.command == "stride":
+        return offline.cmd_stride(cfg, expect=(args.args[0] if args.args else None))
+    if args.command == "retry":
+        return offline.cmd_retry(cfg, rounds=int(args.rounds) if args.rounds else 8)
+    if args.command == "scan":
+        shifts = None
+        if args.shifts:
+            shifts = [int(x) for x in args.shifts.split(",") if x.strip()]
+        return offline.cmd_scan(cfg, shifts=shifts)
     return 1

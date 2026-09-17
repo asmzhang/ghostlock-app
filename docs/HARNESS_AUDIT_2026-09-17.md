@@ -8,12 +8,12 @@
 ## 0. 结论摘要
 
 1. **`gl_tuned.env` 不进仓库是对的**（它是设备相关运行期产物），**但它的闭环是断的**：
-   全仓只有 `tools/harness/run.sh:120` 写它，**没有任何脚本读它**；`run.sh:3` 注释与
+   全仓只有 `tools/harness/harness.py run:120` 写它，**没有任何脚本读它**；`ghostlock/` 模块 注释与
    `docs/MARBLE_RESTORE_2026-09-15.md:88` 所说的 "USE 模式" 在当前 harness 中**不存在**。
    ⇒ 所谓"命中后锁参"目前只是留档，不产生行为。
 2. **换电脑会坏的点是硬编码工具链路径**（5 处，P0），以及 **`timeout`/`md5sum` 在 macOS 不可用**
    （`timeout` 出现 34 次、`md5sum` 12 次）。
-3. **核心模块化已经不错**：`env.sh` 已把设备探测与目录推导集中（曾经的 5–9 处重复已消除），
+3. **核心模块化已经不错**：`config.py` 已把设备探测与目录推导集中（曾经的 5–9 处重复已消除），
    8 个脚本统一 `source env.sh`；问题集中在"离群脚本 + 常量内联 + 平台工具"三处。
 
 ## 1. 为什么 `gl_tuned.env` 不放在 `<REPO>` 内
@@ -55,8 +55,8 @@ L0 运行期下发       run.sh:115 把 exploit 语义常量**内联写死**后�
 
 | # | 位置 | 事实 | 换机影响 |
 |---|---|---|---|
-| P0-1 | `run.sh:120` ↔ 全仓 grep | `gl_tuned.env` 只写不读，USE 模式不存在 | 命中后无法一键复跑 |
-| P0-2 | `tools/harness/preflight.sh:2` | `BIN=<NDK>/.../<prebuilt>/bin` 写死 | 任意换机/换 NDK 版本/换平台都坏 |
+| P0-1 | `ghostlock/` 模块 ↔ 全仓 grep | `gl_tuned.env` 只写不读，USE 模式不存在 | 命中后无法一键复跑 |
+| P0-2 | `tools/harness/harness.py preflight:2` | `BIN=<NDK>/.../<prebuilt>/bin` 写死 | 任意换机/换 NDK 版本/换平台都坏 |
 | P0-3 | `Makefile:5,7,12` | 兜底 `D:/AndroidSDK/ndk/*`；`PREBUILT` 只有 windows/linux，**无 darwin** | macOS 无法构建；本机路径兜底会误导 |
 | P0-4 | `tools/kernel_verify.py:72`、`tools/probe_tcp_route.sh:26,29,30` | 默认 `<SDK>`，写死 `<prebuilt>`、clang35/34 | 偏移提取/路由分析在新机器不可用 |
 | P0-5 | `tools/harness/*` 统计 | `timeout`×34、`md5sum`×12 | macOS 默认无 `timeout`（需 `gtimeout`）、无 `md5sum`（需 `md5 -q`） |
@@ -66,12 +66,12 @@ L0 运行期下发       run.sh:115 把 exploit 语义常量**内联写死**后�
 
 | # | 位置 | 事实 |
 |---|---|---|
-| P1-1 | `tools/harness/stats.sh` | 在**自身目录** glob `gl_*.out`，而日志实际在 `<WORK_DIR>` 且名为 `gl_tune_r<N>.log` ⇒ **该脚本已失效**（WORK_DIR 重构后未同步） |
-| P1-2 | `harvest.sh:39-44`、`retry.sh:27-31` | 直接硬编码 `/data/local/tmp`，未用 `env.sh` 已定义的 `$D_TMP`（边界破口，改设备侧目录要改多处） |
-| P1-3 | `run.sh:115` | exploit 语义常量内联（见 §2 L0） |
-| P1-4 | `run.sh.bak`、`run.sh.bak2` | 与 `run.sh` 近乎重复（差异是 `GHOSTLOCK_OWNER=fake`）；跟踪入库 ⇒ 漂移与误用风险 |
+| P1-1 | `tools/harness/harness.py stats` | 在**自身目录** glob `gl_*.out`，而日志实际在 `<WORK_DIR>` 且名为 `gl_tune_r<N>.log` ⇒ **该脚本已失效**（WORK_DIR 重构后未同步） |
+| P1-2 | `harvest.sh:39-44`、`retry.sh:27-31` | 直接硬编码 `/data/local/tmp`，未用 `config.py` 已定义的 `$D_TMP`（边界破口，改设备侧目录要改多处） |
+| P1-3 | `ghostlock/` 模块 | exploit 语义常量内联（见 §2 L0） |
+| P1-4 | `run.sh.bak`、`run.sh.bak2` | 与 `run` 子命令 近乎重复（差异是 `GHOSTLOCK_OWNER=fake`）；跟踪入库 ⇒ 漂移与误用风险 |
 | P1-5 | 各脚本 | 无参数校验、无 `--help`/`--dry-run`/`--print-config`；`ROUNDS=abc` 之类会静默走偏 |
-| P1-6 | `tools/harness/check.sh:27` | `stat -c%s`（GNU）在 macOS 不可用（需 `stat -f%z`） |
+| P1-6 | `tools/harness/harness.py check:27` | `stat -c%s`（GNU）在 macOS 不可用（需 `stat -f%z`） |
 
 ### P2 —— 打磨项
 
@@ -81,7 +81,7 @@ L0 运行期下发       run.sh:115 把 exploit 语义常量**内联写死**后�
 | P2-2 | `env.sh:64-66` | 设备侧根路径 `D_TMP/D_SDCARD/D_AP` 集中但**不可覆盖**（建议支持 `GHOSTLOCK_D_TMP` 等） |
 | P2-3 | `docs/*`、`README*.md` | 大量写死工具链绝对路径与 NDK 版本；`python` 与 `python3` 混用（34 vs 14） |
 | P2-4 | `tools/copy_len.py:18` | 注释引用本机 `<LLVM_MINGW>/...`（无害但属本机信息） |
-| P2-5 | `run.sh` / `shift_scan.sh` / `retry.sh` | 日志命名不统一（`gl_tune_r*.log` / `gl_scan_*.log` / `gl_retry_r*.log`） |
+| P2-5 | `run` 子命令 / `shift_scan.sh` / `retry.sh` | 日志命名不统一（`gl_tune_r*.log` / `gl_scan_*.log` / `gl_retry_r*.log`） |
 
 ## 4. 目标架构（解耦 · 模块化 · 边界 · 跨平台）
 
@@ -101,10 +101,10 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 | 模块 | 职责 | 不做 |
 |---|---|---|
 | `config.sh`（新） | 读 L1/L2、校验、`--print-config`、`--dry-run` | 不探测设备、不跑 adb |
-| `env.sh` | 设备探测、目录推导、导出配置对象 | 不含平台命令分支 |
-| `platform.sh`（新） | `md5_of()`、`timeout_cmd()`、`stat_size()`、`ndk_prebuilt_dir()`、`host_os()` | 不关心业务语义 |
-| `run.sh`/`watcher.sh`/... | 只做流程 | 不再出现字面量路径/常量 |
-| exploit 开关 | 全部列在 L2 示例文件里，由 `run.sh` 组装下发 | 不写死在脚本中 |
+| `config.py` | 设备探测、目录推导、导出配置对象 | 不含平台命令分支 |
+| `plat.py`（新） | `md5_of()`、`timeout_cmd()`、`stat_size()`、`ndk_prebuilt_dir()`、`host_os()` | 不关心业务语义 |
+| `run` 子命令/`Watcher`/... | 只做流程 | 不再出现字面量路径/常量 |
+| exploit 开关 | 全部列在 L2 示例文件里，由 `run` 子命令 组装下发 | 不写死在脚本中 |
 
 ### 4.3 跨平台要求
 
@@ -118,19 +118,19 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 ## 5. 换机清单（照着做即可迁移）
 
 1. 装 `adb`（在 PATH）、NDK（设 `ANDROID_NDK_HOME`）、`python3`；Linux/macOS 另需 `coreutils`
-   （macOS 建议 `brew install coreutils` 提供 `gtimeout`/`md5sum`，或依赖 `platform.sh` 降级）。
+   （macOS 建议 `brew install coreutils` 提供 `gtimeout`/`md5sum`，或依赖 `plat.py` 降级）。
 2. 克隆仓库到任意位置；把 `android12-5.10_kernelpatch.ko`、`libksud.so` 放到**仓库的上一级**
    （或设 `GHOSTLOCK_WORK=<素材目录>`）。
 3. 复制 `config/harness.example.env` 为 `<WORK_DIR>/gl_local.env`，填入设备序列号/路径。
-4. `bash tools/harness/run.sh`（TUNE）＋另起 `bash tools/harness/watcher.sh`；命中后
-   `bash tools/harness/finish.sh` 收尾。
+4. `python3 tools/harness/harness.py run`（TUNE）＋另起 `python3 tools/harness/harness.py root   # 内置独立监视，无需单独开一条线`；命中后
+   `python3 tools/harness/harness.py finish` 收尾。
 
 ## 6. 落地计划（分批、可回滚、每步可验证）
 
 | 批次 | 内容 | 验证方式 |
 |---|---|---|
-| P0-A | 新增 `platform.sh`（md5/timeout/stat/ndk 探测），替换 34 处 `timeout` 与 12 处 `md5sum` | `bash -n` 全部脚本；在 Windows 上跑一轮 harness 不回归 |
-| P0-B | 新增 `config/harness.example.env` + `env.sh` 读取 `<WORK_DIR>/gl_local.env`；`run.sh:115` 的开关移入配置 | `--print-config` 输出与旧行为逐项对照 |
+| P0-A | 新增 `plat.py`（md5/timeout/stat/ndk 探测），替换 34 处 `timeout` 与 12 处 `md5sum` | `bash -n` 全部脚本；在 Windows 上跑一轮 harness 不回归 |
+| P0-B | 新增 `config/harness.example.env` + `config.py` 读取 `<WORK_DIR>/gl_local.env`；`ghostlock/` 模块 的开关移入配置 | `--print-config` 输出与旧行为逐项对照 |
 | P0-C | 实现 USE 模式（`MODE=use` 读 `gl_tuned.env` 复跑，含参数校验） | 用现有 `gl_tuned.env` 复跑一轮，参数与日志逐字对照 |
 | P0-D | 修 `Makefile`/`build.gradle.kts` 的 darwin 分支、删本机兜底；`preflight.sh`/`kernel_verify.py`/`probe_tcp_route.sh` 改走探测 | 在本机与新 NDK 版本路径下各构建一次 |
 | P1 | 修 `stats.sh`（目录+命名）、`harvest/retry` 改用 `$D_TMP`、清理 `.bak`、加参数校验与 `--help` | 单脚本 dry-run |
@@ -153,13 +153,13 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 | `tools/harness/config.sh` | 配置层：读 L1、CLI 解析（`--print-config / --dry-run / --mode / --device / --rounds / --shift / --help`）、参数校验、`config_exploit_env`、NDK 版本偏离告警 |
 | `config/harness.example.env` | L2 入库示例：全键位 + 默认值 + 说明，零本机信息 |
 | `config/deps.manifest` | 依赖清单（文件名/字节/md5）+ **已验证构建锚点**（`build-pin: ndk=28.2.13676358 ghostlock=4bb625f8…`） |
-| `tools/harness/deps.sh` | 换机第一步：依赖/产物/NDK/adb 自足性检查（退出码=失败项数） |
+| `tools/harness/harness.py deps` | 换机第一步：依赖/产物/NDK/adb 自足性检查（退出码=失败项数） |
 | `harness.local.env` | L1 本机配置（**不入库**，`.gitignore` 已忽略） |
 
 ### 7.2 改造
 
-- `env.sh`：接入 `platform.sh`；先 source L1 再推导；**WORK_DIR 三档解析**（显式 → 仓库上一级若有依赖 → `<REPO>/run`）；`DEPS` 可独立指定；`D_TMP/D_SDCARD/D_AP/D_KSU` 可覆盖；新增 `adb()` 包装（`ADB_CMD`，调用点零改动即可换 adb 二进制）。
-- `run.sh`：explit 开关改为从配置组装（`config_exploit_env`），新增 `MODE=use`（读 `gl_tuned.env` 复跑）与 `--dry-run`；日志/设备路径统一变量。
+- `config.py`：接入 `plat.py`；先 source L1 再推导；**WORK_DIR 三档解析**（显式 → 仓库上一级若有依赖 → `<REPO>/run`）；`DEPS` 可独立指定；`D_TMP/D_SDCARD/D_AP/D_KSU` 可覆盖；新增 `adb()` 包装（`ADB_CMD`，调用点零改动即可换 adb 二进制）。
+- `run` 子命令：explit 开关改为从配置组装（`config_exploit_env`），新增 `MODE=use`（读 `gl_tuned.env` 复跑）与 `--dry-run`；日志/设备路径统一变量。
 - `watcher.sh / retry.sh / harvest.sh / finish.sh / shift_scan.sh / check_stride.sh / probe_tcp_route.sh`：`timeout`→`tmo`、本地 `md5sum`→`md5_of`、`stat -c%s`→`stat_size`、`/data/local/tmp`→`$D_TMP`（单引号 payload 改为双引号以便展开）。
 - `stats.sh`：**修复失效**——改从 `LOGDIR` 读 `gl_run*.out` / `harness_run_*.out`（轮次头在这里，不在逐轮日志里）。
 - NDK 硬编码全部移除：`preflight.sh`、`kernel_verify.py`、`probe_tcp_route.sh`、`build.sh`、`build_apk.sh`、`Makefile`（含 darwin 分支与"取最高版本"修正）、`build.gradle.kts`（prebuilt 目录探测）。
@@ -171,7 +171,7 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 |---|---|
 | 全部 shell 脚本 `bash -n` | 通过 |
 | `python -m py_compile tools/kernel_verify.py` | 通过 |
-| `run.sh --dry-run` 下发的设备命令 | 与改造前 `run.sh:115` **逐项一致**（8 个 `GHOSTLOCK_*` 变量同值） |
+| `run.sh --dry-run` 下发的设备命令 | 与改造前 `ghostlock/` 模块 **逐项一致**（8 个 `GHOSTLOCK_*` 变量同值） |
 | `make` 构建（NDK 28.2.13676358） | 产物 md5 `4bb625f8…` 与改造前**逐字节一致** |
 | `make` 无 NDK 变量 | 明确英文报错退出（不再静默/乱码） |
 | `make` 仅给 `ANDROID_HOME` | 自动选中最高版本 NDK 并构建成功 |
@@ -183,23 +183,23 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 ### 7.4 仍建议跟进（未做）
 
 1. ~~文档层写死路径~~ **已解决（见 §7.5）**：全部换成 `<SDK>`/`<NDK>`/`<prebuilt>` 等占位符，README 改为自动取 NDK 版本与 prebuilt 名。
-2. ~~`python`/`python3` 混用~~ **已解决（见 §7.5）**：`platform.sh` 解析 `PYTHON_BIN`（PYTHON > python3 > python）并导出。
-3. ~~`finish.sh` 表结构硬编码~~ **已解决（见 §7.5）**：表头/行模板/默认包名改为配置项（GL_AP_*），表头不符默认拒绝写入。
+2. ~~`python`/`python3` 混用~~ **已解决（见 §7.5）**：`plat.py` 解析 `PYTHON_BIN`（PYTHON > python3 > python）并导出。
+3. ~~`finish` 子命令 表结构硬编码~~ **已解决（见 §7.5）**：表头/行模板/默认包名改为配置项（GL_AP_*），表头不符默认拒绝写入。
 
 ### 7.5 遗留项收口（同日）
 
 | 原遗留项 | 处理方式 | 验证 |
 |---|---|---|
 | ① 文档/README 写死工具链路径 | 批量替换为占位符：`<SDK>` / `<NDK>` / `<prebuilt>` / `<LLVM_MINGW>`（脚本 `externalize_docs.py`，14 行 / 9 文件）；README 中英文的交叉编译示例改为**自动取 NDK 版本与 prebuilt 目录名**；`PLAYBOOK §0` 增加占位符对照表，并注明"带日期的文档是历史现场记录" | `git grep` 复查 = 0（仅剩 `copy_len.py` 注释里作为工具名的 `llvm-mingw`，非路径） |
-| ② `python` / `python3` 混用 | `platform.sh` 新增 `find_python` 与导出 `PYTHON_BIN`（`PYTHON` > `python3` > `python`）；`check.sh` 改用它，缺失时明确报错 | 本机解析为 `python3`；`bash -n` 通过 |
-| ③ `finish.sh` 的 `package_config` 表结构硬编码 | 表头 / 行模板 / 默认包名改为配置项：`GL_AP_HEADER`、`GL_AP_ROW_FMT`（printf 格式：包名、uid）、`GL_AP_PKGS`、`GL_AP_FORCE`；表头与预期不符时**默认拒绝写入**（`exit 3`）并打印实际/预期，避免换 ROM 写坏授权表 | 真机 `finish.sh --dry-run`（只读）确认现有表头与预期一致、各步骤计划正确、设备未被改动 |
+| ② `python` / `python3` 混用 | `plat.py` 新增 `find_python` 与导出 `PYTHON_BIN`（`PYTHON` > `python3` > `python`）；`check` 子命令 改用它，缺失时明确报错 | 本机解析为 `python3`；`bash -n` 通过 |
+| ③ `finish` 子命令 的 `package_config` 表结构硬编码 | 表头 / 行模板 / 默认包名改为配置项：`GL_AP_HEADER`、`GL_AP_ROW_FMT`（printf 格式：包名、uid）、`GL_AP_PKGS`、`GL_AP_FORCE`；表头与预期不符时**默认拒绝写入**（`exit 3`）并打印实际/预期，避免换 ROM 写坏授权表 | 真机 `finish.sh --dry-run`（只读）确认现有表头与预期一致、各步骤计划正确、设备未被改动 |
 
-附带改进：`finish.sh` 新增 `--dry-run`，可在不重启框架、不写授权表的前提下预览收尾计划（收尾窗口只有约 1 分钟，预览能力对换机后首次运行很有价值）。
+附带改进：`finish` 子命令 新增 `--dry-run`，可在不重启框架、不写授权表的前提下预览收尾计划（收尾窗口只有约 1 分钟，预览能力对换机后首次运行很有价值）。
 
 ### 7.6 一键入口与"证据是否入库"的判断（同日）
 
 **新增 `tools/harness/root.sh`**（编排，不改动既有脚本行为）：
-自检 `deps.sh` → 后台起 `watcher.sh` → `run.sh`（TUNE/USE）→ 命中即停 → `finish.sh` 收尾 → `su -c id` 终验。
+自检 `deps.sh` → 后台起 `Watcher` → `run` 子命令（TUNE/USE）→ 命中即停 → `finish` 子命令 收尾 → `su -c id` 终验。
 退出码：`0` 已 root / `2` 轮数用尽未命中 / `3` 前置失败 / `4` 命中但收尾或终验失败；支持
 `--rounds N`、`--no-finish`、`--skip-preflight`、`--dry-run`。
 
@@ -250,8 +250,9 @@ Windows(Git Bash) / Linux / macOS 三者不一致；Python 只有一个运行时
 | 全部模块 `py_compile` | 通过 |
 
 **删除**：`run/watcher/finish/deps/stats/root/config` 共 7 个 `.sh`（历史仍在 git 中）。
-**保留**：`env.sh` + `platform.sh` 作为薄适配层，供 4 个**离线/探索脚本**（`retry.sh`、`harvest.sh`、
-`shift_scan.sh`、`check_stride.sh`）与自检脚本 `check.sh` 使用——它们不在主流程内，是否一并移植待定。
+（注：本节写作时留下的另外 8 个 `.sh` 已在 §7.9 一并移植，`tools/harness/` 现为纯 Python。）
+**保留**：`config.py` + `plat.py` 作为薄适配层，供 4 个**离线/探索脚本**（`retry.sh`、`harvest.sh`、
+`shift_scan.sh`、`stride` 子命令）与自检脚本 `check` 子命令 使用——它们不在主流程内，是否一并移植待定。
 
 **实现要点**：L1 本地配置里的 `ANDROID_*` 会注入进程环境供 NDK 探测（不覆盖已有环境变量）；
 所有传给 adb 的路径统一转正斜杠（adb.exe 只认盘符路径，反斜杠与 POSIX 形式会静默失败）。
@@ -279,3 +280,21 @@ Windows(Git Bash) / Linux / macOS 三者不一致；Python 只有一个运行时
 
 **结论**：Python 版与 bash 版行为一致，且**能真正拿到 root**；`--rounds 1` 是最便宜的试金石
 （dry-run 只验证命令拼装，验不出推送校验/分类/退出码这类问题）。
+
+### 7.9 收尾：`tools/harness` 零 shell（同日）
+
+把剩下 6 个离线/探索脚本 + 2 个薄适配层一并移植，**`tools/harness/` 现在只有 Python**：
+
+| 原脚本 | 新子命令 | 说明 |
+|---|---|---|
+| `preflight.sh` | `harness.py preflight` | `.ko` 未定义符号 vs 设备 kallsyms 预检（NDK 的 `llvm-nm` 自动定位） |
+| `harvest.sh` | `harness.py harvest [tag]` | 命中取证：**改用 `cat` 读设备文件落盘**（原 `adb pull` 对 /sdcard 实测会失败） |
+| `retry.sh` | `harness.py retry [--rounds N]` | 重启重试循环（`W1_ATTEMPTS=3`） |
+| `shift_scan.sh` | `harness.py scan [--shifts ...]` | SHIFT 扫描：按 `post-select … ret=N` / `SELinux permissive` / 设备 DOWN 分类 |
+| `check_stride.sh` | `harness.py stride [期望值]` | slabinfo `objsize` vs `offsets.h` 的 `.mm_struct_sz`（按设备内核选代码块） |
+| `check.sh` | `harness.py check [--build]` | 自检：`py_compile` + 依赖 + 产物 md5 与 build-pin 对照（`--build` 顺带编译并查零警告） |
+| `env.sh` + `platform.sh` | —（删除） | 能力已由 `config.py` + `plat.py` 承担 |
+
+**删除后状态**：`tools/harness/` = `harness.py` + `ghostlock/{__init__,cli,config,device,flow,offline,plat}.py`，
+共 8 个文件，无 `.sh`、无 coreutils 依赖。文档中非历史部分（`config/*`、`PLAYBOOK`、`ADAPT_NEW_KERNEL`、
+`DEVICE_MARBLE`、`ESSENCE`）的旧脚本引用已同步改名（57 行）；带日期的历史文档保持原貌。

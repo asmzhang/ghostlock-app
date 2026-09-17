@@ -19,7 +19,7 @@
 | L0 | 命令行 / 环境变量 | — | 一次性覆盖，如 `--rounds 30`、`ANDROID_NDK_HOME=…` |
 | L1 | `<REPO>/harness.local.env` | **否**（已 gitignore） | 本机值：SDK/NDK 路径、设备序列号、运行参数 |
 | L2 | `config/harness.example.env` | 是 | 全键位示例与默认值（零本机信息），复制成 L1 |
-| L3 | `env.sh` + `platform.sh` | 是 | 自动探测：设备型号、核心对、目录推导、平台命令 |
+| L3 | `config.py` + `plat.py` | 是 | 自动探测：设备型号、核心对、目录推导、平台命令 |
 
 **换一台机器 / 换一个平台**：
 

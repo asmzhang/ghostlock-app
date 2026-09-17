@@ -24,7 +24,7 @@
 这种**跨簇**组合 —— 而本漏洞依赖两线程时序对齐，跨簇会引入调度迁移抖动。
 **正确目标是中核簇 `cpu4,5,6` 的前两个 → `4 5`。**
 
-`run.sh` 的 `detect_core_pair()` 即按"成员数 ≥ 2 的最高频簇"实现，输出 `4 5` ✓
+`run` 子命令 的 `detect_core_pair()` 即按"成员数 ≥ 2 的最高频簇"实现，输出 `4 5` ✓
 
 ## 3. 关键偏移与参数
 
@@ -40,7 +40,7 @@
 —— **两者都对，只是层次不同**：`0` 是 raw shift，`-2` 是 ghostlock 实际使用的值。
 **不要以为值被改坏了。**
 
-核对手段：`bash tools/harness/check_stride.sh`（自动按设备内核选对应代码块比对）
+核对手段：`python3 tools/harness/harness.py stride`（自动按设备内核选对应代码块比对）
 
 ## 4. Reclaim 路线判定（实测）
 
@@ -81,7 +81,7 @@ optlen 回写为 0x28              ← ★ 内核真实的 struct 大小
 
 ### 5.2 设备状态（差异达 3.5 倍）
 
-`run.sh:60-66` 记录的实测：
+`ghostlock/` 模块 记录的实测：
 
 ```
 W1 survival:  ~25%（right after boot）
@@ -92,7 +92,7 @@ W1 survival:  ~25%（right after boot）
 
 ## 6. 失败分类与判读
 
-`run.sh` 每轮分三类：
+`run` 子命令 每轮分三类：
 
 | 分类 | 判定 | 含义 |
 |---|---|---|
@@ -137,7 +137,7 @@ init.svc.apexd = stopped
 ```
 
 **已排除的原因**：`load_policy`（设备脚本里 `GHOSTLOCK_SKIP_FIXUP_BAKED='1'`，
-确实跳过了）、`finish.sh`（里面没跑 ghostlock）、C 侧第二条路径。
+确实跳过了）、`finish` 子命令（里面没跑 ghostlock）、C 侧第二条路径。
 
 **但后续一次完整收尾并未复现**（框架完好、`app_process64` 标签仍是
 `zygote_exec`）。**故判定为偶发、复现条件未知。** 若再次出现，需专门二分定位。
@@ -149,6 +149,6 @@ init.svc.apexd = stopped
 - **SDK 路径**：`build.sh` 按 `ANDROID_HOME → NDK_ROOT → local.properties 的 sdk.dir
   → LOCALAPPDATA` 依次解析。本机 `local.properties` 里是
   `sdk.dir=D\:\platform\Android\Sdk`，且该文件已被 `.gitignore` 忽略。
-- **开发机同时连着多台设备**时，`env.sh` 按 `model:marble` 匹配选设备（`3e6f1443`）；
+- **开发机同时连着多台设备**时，`config.py` 按 `model:marble` 匹配选设备（`3e6f1443`）；
   更稳妥的做法是显式设 `GHOSTLOCK_DEV=<序列号>`。
 - **adb 路径**：本机 `adb.exe` 需传 Windows 盘符（`D:/...`），POSIX `/d/...` 会静默失败。

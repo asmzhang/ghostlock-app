@@ -1,6 +1,6 @@
 # GhostLock 运行依赖清单（本文件入库；依赖文件本身不入库）
 #
-# 用途：换机后先跑 `bash tools/harness/deps.sh` 校验依赖是否就位、是否与已验证版本一致。
+# 用途：换机后先跑 `python3 tools/harness/harness.py deps` 校验依赖是否就位、是否与已验证版本一致。
 # 放置位置：默认 <WORK_DIR>（= 仓库上一级或 <REPO>/run），也可用 GHOSTLOCK_DEPS 指定，
 #           或直接放 <REPO>/deps/（该目录已被 .gitignore 忽略）。
 #

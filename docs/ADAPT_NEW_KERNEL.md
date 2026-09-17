@@ -124,7 +124,7 @@ adb shell 'su -c "cat /proc/slabinfo | grep mm_struct"'
 ### 这一步已自动化
 
 ```bash
-bash tools/harness/check_stride.sh      # 自动取设备内核 → 选对代码块 → 比对
+python3 tools/harness/harness.py stride      # 自动取设备内核 → 选对代码块 → 比对
 ```
 
 它会读设备 `/proc/slabinfo` 的 `mm_struct` 行，取 `objsize`，
@@ -254,7 +254,7 @@ marble（SM7475）实测对照，两组都从**重启后的新鲜状态**起步�
 ```
 
 **注意最高频的 `cpu7` 是单核簇** —— 若只按"最高频"取，会得到 `7/4` 这种**跨簇**
-组合。所以 `run.sh` 的探测规则是：**取成员数 ≥ 2 的最高频簇的前两个核**。
+组合。所以 `run` 子命令 的探测规则是：**取成员数 ≥ 2 的最高频簇的前两个核**。
 （README 也写 "defaults to the big cores (**fallback** 0/1)"，说明 0/1 本就是兜底值。）
 
 **统计局限，必须说明**：B 组因首轮命中即退出，只跑了 1 轮；且此前在默认 `0/1`
@@ -264,7 +264,7 @@ marble（SM7475）实测对照，两组都从**重启后的新鲜状态**起步�
 
 **杠杆二 · 设备状态：刚启动的存活率是跑一阵后的 3.5 倍**
 
-`run.sh:60-66` 的实测记录：
+`ghostlock/` 模块 的实测记录：
 
 ```
 W1 survival:  ~25%（right after boot）
@@ -274,7 +274,7 @@ W1 survival:  ~25%（right after boot）
 代价只要 ~45 秒一次重启。**这也是"同一套参数有时秒中、有时半天不中"的主因** ——
 不是参数变了，是**设备状态变了**。
 
-**判读指标**：`run.sh` 把每轮分为三类 ——
+**判读指标**：`run` 子命令 把每轮分为三类 ——
 
 ```
 grep "child is root!|self is root"  → HIT
@@ -337,11 +337,11 @@ uptime 读不到（设备已重启）          → PANIC (fired, died)
 
 ```bash
 # 离线
-bash tools/harness/check.sh
+python3 tools/harness/harness.py check
 
 # 上机（需要命中，1~20 分钟）
-bash tools/harness/run.sh > gl_run.out 2>&1 &
-bash tools/harness/watcher.sh      # 必须另起独立轮询
+python3 tools/harness/harness.py run > gl_run.out 2>&1 &
+python3 tools/harness/harness.py root   # 内置独立监视，无需单独开一条线      # 必须另起独立轮询
 ```
 
 命中后按 `docs/PLAYBOOK.md` 第 5 步收尾，验收三条：
@@ -364,7 +364,7 @@ su -c id        → gid=0 + context=u:r:magisk:s0
 | 0 | **判可行性**：补丁状态 + 栈是否重叠 | `remove_waiter()` 仍用 `current`；`pselect/futex` delta 为非负 | ✅ 已自动 | — |
 | 1 | 提取偏移并 `--register` | 必需符号无失败 | ✅ 已自动 | `e3e05de` |
 | 2 | 加诊断开关 | 能看到每轮的内部状态 | ⚠️ 人工一次，之后复用 | `8d374f3` |
-| 3 | 校验结构体大小 / stride | **用 slabinfo 等设备事实验证** | ✅ 已自动（`tools/harness/check_stride.sh`，见下） | `20cc8fd` |
+| 3 | 校验结构体大小 / stride | **用 slabinfo 等设备事实验证** | ✅ 已自动（`tools/harness/harness.py stride`，见下） | `20cc8fd` |
 | 4 | 确定 reclaim 路线 | **直接探测，不必读源码** | ✅ 已自动（`tools/probe_tcp_route.c`，见下） | `6ded65a` |
 | 5 | 调堆喷射与 waiter 字布局 | 稳定命中而非偶发 | ❌ **必须人工** | `50136e4` |
 | 6 | 定 shift 等关键参数 | **在 stock 状态下测** | ✅ 已自动（BTF / BTF-less 两条路径） | `fe155cf` / `53282cf` |

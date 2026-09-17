@@ -33,7 +33,7 @@
 | **能出 root 的提交** | `347dfec8fa6cd5c204a693565f7e9fd1482ee6ca`（2026-09-11 11:44:52 "root achieved"）|
 | **二进制** | `artifacts/2026-09-15/ghostlock-347dfec-100880`，100880 B，md5 `36430a2fbb2c42c243acf9a8698d169e` |
 | **可用参数** | `SHIFT=-2`、`CORE=4`、`CCORE=5`（`gl_tuned.env`，在工作区外层）|
-| **入口脚本** | `tools/harness/run.sh`（TUNE 模式；`gl_tune.sh` 的后继）+ `tools/harness/watcher.sh` |
+| **入口脚本** | `tools/harness/harness.py run`（TUNE 模式；`gl_tune.sh` 的后继）+ `harness.py root（内置监视）` |
 | **一轮 / 命中率** | 单轮 60–70s；**单轮命中 5–8%** ⇒ **必须 30 轮**（历史命中：28/7/1/1/22/1/14〔09-15〕/43〔09-16，第二批第 13 轮〕） |
 | **命中判据** | `/proc/modules` 出现 `kernelpatch`（watcher）+ `su -c id` 显示 **gid 为垃圾值** |
 | **收尾判据** | soft-reboot 后 `su -c id` = `gid=0` + `u:r:magisk:s0` |
@@ -90,7 +90,7 @@
 
 | # | 坑 | 正确做法 |
 |---|---|---|
-| 1 | **命中后不停 harness** | 立刻 `pkill -f tools/harness/run.sh`，否则下一轮 panic 打掉 root |
+| 1 | **命中后不停 harness** | 立刻 `pkill -f tools/harness/harness.py run`，否则下一轮 panic 打掉 root |
 | 2 | **长跑任务用 `nohup &`** | 命令被中断会**连带杀死** ⇒ 必须用**工具的托管后台** |
 | 3 | **`adb.exe` 传 POSIX 路径**（`/d/...`）| 只认**盘符路径** `D:/...`（否则静默失败/`cannot stat`）|
 | 4 | `.ko`/`libksud.so` 位置 | 实际在 **`<REFS_DIR>/`（工作区上一层）**；harness 期望在 `<ARCHIVE_DIR>/` |
@@ -247,7 +247,7 @@ rt_mutex_dequeue_pi(owner, waiter);     // ← 真正的 8 字节写发生在这
 | 0 | 判可行性：补丁状态 + 栈是否重叠 | `remove_waiter()` 仍用 `current`；`pselect/futex` delta 为非负 | ✅ | — |
 | 1 | 提取偏移并 `--register` | 必需符号无解析失败 | ✅ | `e3e05de` |
 | 2 | 加**诊断开关**（排在很前面） | 能看到每轮内部状态 | ⚠️ 一次，之后复用 | `8d374f3` |
-| 3 | 校验结构体大小 / stride | **用 `slabinfo` 等设备事实验证** | ✅ `check_stride.sh` | `20cc8fd` |
+| 3 | 校验结构体大小 / stride | **用 `slabinfo` 等设备事实验证** | ✅ `stride` 子命令 | `20cc8fd` |
 | 4 | 定 reclaim 路线 | **直接探测**（`probe_tcp_route`） | ✅ | `6ded65a` |
 | 5 | 调堆喷射 / waiter 字布局 | 稳定命中而非偶发 | ❌ **必须人工** | `50136e4` |
 | 6 | 定 shift 等关键参数 | **在 stock 状态下测** | ✅（BTF / BTF-less 两条路）| `fe155cf`/`53282cf` |
@@ -262,7 +262,7 @@ rt_mutex_dequeue_pi(owner, waiter);     // ← 真正的 8 字节写发生在这
    **头文件 0x40 ≠ 内核 0x28**（marble 实测）⇒ **靠编译期 `sizeof` 判断走不通**。
    判据是**回写值**，不是"看哪些字节被回写"（后者在 `find_vma` 校验失败提前返回时是空的 ✗）。
 2. **`stride` 是运行时属性**，镜像里不存在 ⇒ 提取器给不了 ⇒ 用 `slabinfo`（5.10 BTF 报 0x3e0，**实际 0x3c0**）。
-   `check_stride.sh` 必须**按 `uname -r` 选对应的 `STRUCT_OFFSETS_*` 块**，否则会取到别的代际而误报 ✓
+   `stride` 子命令 必须**按 `uname -r` 选对应的 `STRUCT_OFFSETS_*` 块**，否则会取到别的代际而误报 ✓
 3. **参数必须在"目标内核的原始状态"下测** —— 5.10 的 `shift` 曾测出 `-2` 是**假象**（那是在带 KPM 的内核上测的，
    KernelPatch 改了栈布局）；stock 上是 `0`。（实测裁决：**只有 `-2` 能触发、`0` 完全无效** ⇒ **反汇编推导的 shift 不可直接采信，必须实测**）（本项目内部值 = raw − 2 ⇒ `-2` 与 `0` **两者都对，层次不同**。）
 
@@ -351,7 +351,7 @@ rt_mutex_dequeue_pi(owner, waiter);     // ← 真正的 8 字节写发生在这
 
 | 集合 | 位置 | 状态 |
 |---|---|---|
-| **当前有效** | `tools/harness/`（`run.sh` TUNE / `watcher.sh` 独立轮询 / `env.sh` / `check_stride.sh` / `probe_tcp_route.sh` / `preflight.sh` / `stats.sh`）| ✅ 用这套 |
+| **当前有效** | `tools/harness/`（`run` 子命令 TUNE / `Watcher` 独立轮询 / `config.py` / `stride` 子命令 / `probe_tcp_route.sh` / `preflight.sh` / `stats.sh`）| ✅ 用这套 |
 | **历史实验** | 旧工作树 `root/exp/`（数十个 `gl_*.sh`：tune/retry/oops_trap/cal/scan）| 📦 归档，查"试过什么"时翻 |
 | **已消失** | 根目录 `gl_tune.sh` / `_watcher.sh`（**未纳入 git**）| ❌ 已被 harness 取代 |
 
@@ -366,6 +366,6 @@ rt_mutex_dequeue_pi(owner, waiter);     // ← 真正的 8 字节写发生在这
 
 ### 10.4 流程（三条）
 
-1. **TUNE（探索）**：`ROUNDS=30 REBOOT_EVERY=0 bash tools/harness/run.sh` + **另起** `watcher.sh`；命中即停、参数锁进 `gl_tuned.env`；看三分类分布，不看"成功几次"。
+1. **TUNE（探索）**：`ROUNDS=30 REBOOT_EVERY=0 python3 tools/harness/harness.py run` + **另起** `Watcher`；命中即停、参数锁进 `gl_tuned.env`；看三分类分布，不看"成功几次"。
 2. **USE（复现）**：读 `gl_tuned.env`（`SHIFT=-2 CORE=4 CCORE=5`）直接跑。
 3. **收尾 8 步**：停 harness → 关 `panic_on_oops/rcu_stall` → 管理器重启 → `apd soft-reboot` → 验内核未重启 → `apd resetprop sys.boot_completed 1` → 写 `package_config` + 起 `uid-listener` → 终验 `gid=0` + magisk 域。
