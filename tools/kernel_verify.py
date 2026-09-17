@@ -68,12 +68,38 @@ def find_tool(key, extra_dirs=()):
 
 
 def ndk_bin_candidates():
+    """NDK 的 llvm prebuilt bin 目录候选（不写死盘符/版本/prebuilt 名）。
+    顺序：ANDROID_NDK_HOME/ANDROID_NDK_ROOT → 各 SDK 根下的 ndk/*（版本号降序）→ 常见安装位置。
+    prebuilt 子目录名（windows-x86_64 / darwin-x86_64 / linux-x86_64）一律探测实际存在的。"""
     out = []
-    for root in ("D:/platform/Android/Sdk/ndk", os.path.expanduser("~/Android/Sdk/ndk")):
-        if os.path.isdir(root):
-            for v in os.listdir(root):
-                out.append(os.path.join(root, v, "toolchains", "llvm",
-                                        "prebuilt", "windows-x86_64", "bin"))
+    roots = []
+    for key in ("ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"):
+        v = os.environ.get(key)
+        if v and os.path.isdir(v):
+            roots.append(v)
+    sdks = [os.environ.get("ANDROID_HOME"), os.environ.get("ANDROID_SDK_ROOT"),
+            os.environ.get("LOCALAPPDATA") and
+            os.path.join(os.environ["LOCALAPPDATA"], "Android", "Sdk"),
+            os.path.expanduser("~/Android/Sdk"),
+            "/opt/android-sdk", "/usr/local/lib/android/sdk"]
+    for sdk in sdks:
+        if not sdk:
+            continue
+        ndkd = os.path.join(sdk, "ndk")
+        if not os.path.isdir(ndkd):
+            continue
+        for v in sorted(os.listdir(ndkd), reverse=True):
+            p = os.path.join(ndkd, v)
+            if os.path.isdir(p):
+                roots.append(p)
+    for r in roots:
+        pre = os.path.join(r, "toolchains", "llvm", "prebuilt")
+        if not os.path.isdir(pre):
+            continue
+        for name in sorted(os.listdir(pre)):
+            b = os.path.join(pre, name, "bin")
+            if os.path.isdir(b):
+                out.append(b)
     return out
 
 

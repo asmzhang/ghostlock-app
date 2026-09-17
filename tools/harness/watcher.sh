@@ -14,25 +14,25 @@ mkdir -p "$OUT"
 echo "watcher start $(date +%H:%M:%S) — polling /proc/modules directly" >> "$LOG"
 
 for i in $(seq 1 1600); do
-  mod=$(timeout 8 adb -s $DEV shell 'grep -c kernelpatch /proc/modules 2>/dev/null' 2>/dev/null | tr -d '\r')
+  mod=$(tmo 8 adb -s $DEV shell "grep -c kernelpatch /proc/modules 2>/dev/null" 2>/dev/null | tr -d '\r')
   if [ "$mod" = "1" ]; then
     echo "[$(date +%H:%M:%S)] *** MODULE DETECTED in /proc/modules ***" >> "$LOG"
     echo "--- su -c id (kpatch sucompat) ---" >> "$LOG"
-    timeout 25 adb -s $DEV shell 'su -c id 2>&1 | head -3' >> "$LOG" 2>&1
+    tmo 25 adb -s $DEV shell "su -c id 2>&1 | head -3" >> "$LOG" 2>&1
     echo "--- /proc/modules entry ---" >> "$LOG"
-    timeout 15 adb -s $DEV shell 'grep kernelpatch /proc/modules' >> "$LOG" 2>&1
+    tmo 15 adb -s $DEV shell "grep kernelpatch /proc/modules" >> "$LOG" 2>&1
     echo "--- /sdcard/ghostlock_klog ---" >> "$LOG"
-    timeout 15 adb -s $DEV shell 'cat /sdcard/ghostlock_klog 2>/dev/null | tail -20' >> "$LOG" 2>&1
+    tmo 15 adb -s $DEV shell "cat $D_SDCARD/ghostlock_klog 2>/dev/null | tail -20" >> "$LOG" 2>&1
     echo "--- kpatch sysfs ---" >> "$LOG"
-    timeout 15 adb -s $DEV shell 'ls -la /sys/module/kernelpatch 2>&1 | head -3' >> "$LOG" 2>&1
+    tmo 15 adb -s $DEV shell "ls -la /sys/module/kernelpatch 2>&1 | head -3" >> "$LOG" 2>&1
     echo "--- APatch manager ---" >> "$LOG"
-    timeout 20 adb -s $DEV shell 'pm list packages 2>/dev/null | grep -i apatch; ls -la /data/adb/ap/ 2>&1 | head -5' >> "$LOG" 2>&1
-    timeout 15 adb -s $DEV pull /sdcard/ghostlock_klog "$OUT/klog_live.txt" >/dev/null 2>&1
+    tmo 20 adb -s $DEV shell "pm list packages 2>/dev/null | grep -i apatch; ls -la /data/adb/ap/ 2>&1 | head -5" >> "$LOG" 2>&1
+    tmo 15 adb -s $DEV pull /sdcard/ghostlock_klog "$OUT/klog_live.txt" >/dev/null 2>&1
     echo "[$(date +%H:%M:%S)] verification recorded; tracking module residency" >> "$LOG"
     for j in $(seq 1 20); do
       sleep 5
-      m2=$(timeout 8 adb -s $DEV shell 'grep -c kernelpatch /proc/modules 2>/dev/null' 2>/dev/null | tr -d '\r')
-      s2=$(timeout 10 adb -s $DEV shell 'su -c id 2>&1 | head -1' 2>/dev/null | tr -d '\r')
+      m2=$(tmo 8 adb -s $DEV shell "grep -c kernelpatch /proc/modules 2>/dev/null" 2>/dev/null | tr -d '\r')
+      s2=$(tmo 10 adb -s $DEV shell "su -c id 2>&1 | head -1" 2>/dev/null | tr -d '\r')
       echo "[$(date +%H:%M:%S)] loaded=${m2:-?} su=[${s2:-}]" >> "$LOG"
     done
     exit 0

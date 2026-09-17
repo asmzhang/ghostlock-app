@@ -127,8 +127,17 @@ else
 fi
 
 # ---------------------------------------------------------------- 5. NDK / SDK
-export ANDROID_HOME="${ANDROID_HOME:-D:/platform/Android/Sdk}"
-[ -d "$ANDROID_HOME" ] || die "找不到 Android SDK：$ANDROID_HOME（设置 ANDROID_HOME）"
+# SDK 定位：ANDROID_HOME / ANDROID_SDK_ROOT → 由 NDK 反推 → 报错提示。
+# 不写死任何本机路径；platform.sh 负责跨平台探测。
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/harness/platform.sh"
+if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
+    _ndk="$(find_ndk 2>/dev/null || true)"
+    if [ -n "$_ndk" ]; then
+        export ANDROID_HOME="$(cd "${_ndk}/../.." && pwd)"   # <sdk>/ndk/<ver> → <sdk>
+    fi
+fi
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+[ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME" ] || die "找不到 Android SDK：请设置 ANDROID_HOME（或 ANDROID_SDK_ROOT）"
 [ -d "$ANDROID_HOME/ndk" ] || die "SDK 下没有 ndk/：$ANDROID_HOME"
 ok "Android  $ANDROID_HOME"
 

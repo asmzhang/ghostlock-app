@@ -23,12 +23,15 @@ bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; }
 info() { printf '  \033[36m·\033[0m %s\n' "$*"; }
 
 # ---------------------------------------------------------------- 找编译器
-ANDROID_HOME="${ANDROID_HOME:-D:/platform/Android/Sdk}"
-NDK_DIR=$(ls -d "$ANDROID_HOME"/ndk/*/ 2>/dev/null | tail -1)
-if [ -z "$NDK_DIR" ]; then bad "找不到 NDK：$ANDROID_HOME/ndk"; exit 1; fi
-CC="${NDK_DIR}toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android35-clang"
-[ -x "$CC" ] || CC="${NDK_DIR}toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android34-clang"
-[ -x "$CC" ] || { bad "找不到 aarch64 clang：$CC"; exit 1; }
+# NDK 走统一探测（tools/harness/platform.sh）：ANDROID_NDK_HOME / ANDROID_NDK_ROOT /
+# ANDROID_HOME/ndk/*（版本最高）/ LOCALAPPDATA / ~/Android/Sdk …，prebuilt 目录名也自动识别。
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "${_here}/harness/platform.sh"
+NDK_DIR="$(find_ndk || true)"
+if [ -z "$NDK_DIR" ]; then bad "找不到 NDK：请设 ANDROID_NDK_HOME 或 ANDROID_HOME"; exit 1; fi
+CC="$(ndk_clang "$NDK_DIR" 35 || true)"
+[ -n "$CC" ] || CC="$(ndk_clang "$NDK_DIR" 34 || true)"
+[ -n "$CC" ] || { bad "NDK 里找不到 aarch64 clang：$NDK_DIR"; exit 1; }
 info "clang    $(basename "$CC")"
 
 # ---------------------------------------------------------------- 编译
@@ -48,14 +51,14 @@ ok "编译完成  $OUT"
 # ---------------------------------------------------------------- 上路
 require_dev || exit 1
 REMOTE=/data/local/tmp/probe_tcp_route
-if ! timeout 60 adb -s "$DEV" push "$OUT" "$REMOTE" >/dev/null 2>&1; then
+if ! tmo 60 adb -s "$DEV" push "$OUT" "$REMOTE" >/dev/null 2>&1; then
     # 本机 adb 需要 Windows 盘符路径
     WIN_OUT="$(cygpath -w "$OUT" 2>/dev/null || printf '%s' "$OUT")"
-    timeout 60 adb -s "$DEV" push "$WIN_OUT" "$REMOTE" >/dev/null 2>&1 || { bad "推送失败"; exit 1; }
+    tmo 60 adb -s "$DEV" push "$WIN_OUT" "$REMOTE" >/dev/null 2>&1 || { bad "推送失败"; exit 1; }
 fi
-timeout 20 adb -s "$DEV" shell "chmod 755 $REMOTE" >/dev/null 2>&1
+tmo 20 adb -s "$DEV" shell "chmod 755 $REMOTE" >/dev/null 2>&1
 ok "已推送    $REMOTE"
 
 # ---------------------------------------------------------------- 运行
 printf '\n\033[1m== 探测结果\033[0m\n'
-timeout 60 adb -s "$DEV" shell "$REMOTE" 2>&1 | tr -d '\r'
+tmo 60 adb -s "$DEV" shell "$REMOTE" 2>&1 | tr -d '\r'

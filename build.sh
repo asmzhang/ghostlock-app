@@ -45,9 +45,9 @@ fi
 if [ -z "$SDK_ROOT" ] || [ ! -d "$SDK_ROOT" ]; then
     {
         echo "找不到 Android SDK。" >&2
-        echo "  按优先级可用：ANDROID_HOME / NDK_ROOT / local.properties 的 sdk.dir" >&2
-        echo "  例如： export ANDROID_HOME=D:/platform/Android/Sdk" >&2
-        echo "  或在项目根写： sdk.dir=D\\\\:\\\\platform\\\\Android\\\\Sdk" >&2
+        echo "  按优先级可用：ANDROID_HOME / ANDROID_SDK_ROOT / NDK_ROOT / local.properties 的 sdk.dir" >&2
+        echo "  例如： export ANDROID_HOME=<你的 SDK 根>" >&2
+        echo "  或在项目根写： sdk.dir=<SDK 绝对路径，盘符转义如 D\\:\\\\path\\\\to\\\\Sdk>" >&2
     }
     exit 1
 fi
@@ -61,10 +61,17 @@ else
 fi
 [ -z "$CANDIDATES" ] && { echo "SDK 下没有 ndk/：$SDK_ROOT" >&2; exit 1; }
 
-case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) PREBUILT=windows-x86_64 ;;
-    *)                    PREBUILT=linux-x86_64 ;;
-esac
+# prebuilt 目录名随宿主平台/NDK 版本变化，**探测实际存在的那个**，不写死。
+# （windows-x86_64 / darwin-x86_64 / linux-x86_64 …；macOS 上装 arm64 NDK 也是 darwin-x86_64）
+PREBUILT=""
+for cand in $CANDIDATES; do
+    for p in "$cand"/toolchains/llvm/prebuilt/*/bin; do
+        [ -d "$p" ] || continue
+        PREBUILT="$(basename "$(dirname "$p")")"
+        break 2
+    done
+done
+[ -z "$PREBUILT" ] && { echo "NDK 下找不到 toolchains/llvm/prebuilt/*/bin：$CANDIDATES" >&2; exit 1; }
 
 # Git Bash 下必须优先选"无扩展名"的 wrapper：它带执行位，而 .cmd 没有（实测），
 # 用 `[ -x ...cmd ]` 判断会全部落空。

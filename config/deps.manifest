@@ -1,0 +1,17 @@
+# GhostLock 运行依赖清单（本文件入库；依赖文件本身不入库）
+#
+# 用途：换机后先跑 `bash tools/harness/deps.sh` 校验依赖是否就位、是否与已验证版本一致。
+# 放置位置：默认 <WORK_DIR>（= 仓库上一级或 <REPO>/run），也可用 GHOSTLOCK_DEPS 指定，
+#           或直接放 <REPO>/deps/（该目录已被 .gitignore 忽略）。
+#
+# 格式： <文件名> <字节数> <md5> <说明>
+android12-5.10_kernelpatch.ko 183312 2b181dee7055e7966cc8dda5a14f43ce KernelPatch 0.13.8 预构建模块（android12-5.10）
+libksud.so 5326360 3b4162c49f56a1fe058c8d9d5e2b4422 KernelSU ksud（APatch late-load / 收尾用）
+
+# ---------------------------------------------------------------- 已验证构建（复现基线）
+# build-pin: ndk=28.2.13676358 ghostlock=4bb625f8a9bfbe6e6505092cb6286b69
+# 2026-09-17 真机 marble 第 13 轮命中并完成 APatch 正规化（终验 uid=0 gid=0 u:r:magisk:s0）。
+#   ghostlock  112968 字节  md5 4bb625f8a9bfbe6e6505092cb6286b69
+#   NDK        28.2.13676358（**换 NDK 版本会改变二进制**：用 29.0.14206865 构建得 48aa7995…）
+#   ⇒ 想要复现"已验证的那一个"，请把 ANDROID_NDK_HOME 指向 28.2.13676358；
+#      换版本后必须重跑一轮真机复验再当作可用基线。

@@ -1,8 +1,20 @@
 #!/bin/bash
-BIN=/d/platform/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin
-NM=$BIN/llvm-nm.exe
-# 以脚本所在目录为根（离线工具，不依赖 env.sh / 不需要设备）
+# 以脚本所在目录为根（离线工具，不需要设备）
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+
+# NDK 工具链走统一探测（platform.sh），不写死路径/版本/平台
+. ./platform.sh
+NDK_ROOT="$(find_ndk || true)"
+BINDIR="$(ndk_prebuilt_bin "$NDK_ROOT" 2>/dev/null || true)"
+NM=""
+for cand in "llvm-nm" "llvm-nm.exe"; do
+    [ -n "$BINDIR" ] && [ -x "$BINDIR/$cand" ] && { NM="$BINDIR/$cand"; break; }
+done
+if [ -z "$NM" ]; then
+    echo "找不到 llvm-nm：请设置 ANDROID_NDK_HOME（或 ANDROID_HOME 指向 SDK 根）。" >&2
+    echo "  NDK_ROOT=[${NDK_ROOT:-未找到}]  prebuilt bin=[${BINDIR:-未找到}]" >&2
+    exit 1
+fi
 
 # device kallsyms symbol names (col 2 of "addr name")
 awk '{print $2}' dev_kallsyms.txt | sort -u > /tmp/dev_syms.txt

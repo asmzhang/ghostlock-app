@@ -13,3 +13,8 @@ __pycache__
 target/
 *.jks
 *.keystore
+
+# ---- 本机文件（不进库；换机时由 harness.local.env 提供）----
+harness.local.env
+/run/
+deps/

@@ -26,7 +26,7 @@ info() { printf '  \033[36m·\033[0m %s\n' "$*"; }
 # ---------------------------------------------------------------- 1. 从设备取事实
 require_dev || exit 1
 
-LINE=$(timeout 25 adb -s "$DEV" shell 'su -c "grep -m1 ^mm_struct /proc/slabinfo"' 2>/dev/null | tr -d '\r')
+LINE=$(tmo 25 adb -s "$DEV" shell "su -c \"grep -m1 ^mm_struct /proc/slabinfo\"" 2>/dev/null | tr -d '\r')
 if [ -z "$LINE" ]; then
     bad "拿不到 slabinfo（需要 root）"
     exit 1
@@ -44,7 +44,7 @@ info "objsize（SLUB stride）= $OBSIZE = $(printf '0x%X' "$OBSIZE")"
 # 注意：offsets.h 里按内核代际分成 STRUCT_OFFSETS_5_10 / _6_1 / _6_6 / _6_12 几块，
 # 每个块都有自己的 .mm_struct_sz。所以必须**按当前设备的内核**选块，
 # 否则会像第一次那样取到别的代际的值（0x400）而误报不一致。
-RELEASE=$(timeout 20 adb -s "$DEV" shell 'uname -r' 2>/dev/null | tr -d '\r')
+RELEASE=$(tmo 20 adb -s "$DEV" shell "uname -r" 2>/dev/null | tr -d '\r')
 case "$RELEASE" in
     5.10.*) BLOCK="STRUCT_OFFSETS_5_10" ;;
     6.1.*)  BLOCK="STRUCT_OFFSETS_6_1" ;;

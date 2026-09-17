@@ -24,8 +24,8 @@ PKGS=("$@")
 [ ${#PKGS[@]} -eq 0 ] && PKGS=(me.bmax.apatch)
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
-dev_sh() { timeout 25 adb -s "$DEV" shell "$@"; }
-dev_su() { timeout 25 adb -s "$DEV" shell "su -c \"$1\""; }
+dev_sh() { tmo 25 adb -s "$DEV" shell "$@"; }
+dev_su() { tmo 25 adb -s "$DEV" shell "su -c \"$1\""; }
 
 # ---------------------------------------------------------------- 0. 前提检查
 say "0. 前提：内核里有没有 kpatch"

@@ -10,6 +10,44 @@
 
 ---
 
+## 第 0 步 · 配置与换机（只带仓库也能跑）
+
+**四层配置，优先级从高到低**（查看最终生效值：`bash tools/harness/run.sh --print-config`）：
+
+| 层 | 位置 | 是否入库 | 放什么 |
+|---|---|---|---|
+| L0 | 命令行 / 环境变量 | — | 一次性覆盖，如 `--rounds 30`、`ANDROID_NDK_HOME=…` |
+| L1 | `<REPO>/harness.local.env` | **否**（已 gitignore） | 本机值：SDK/NDK 路径、设备序列号、运行参数 |
+| L2 | `config/harness.example.env` | 是 | 全键位示例与默认值（零本机信息），复制成 L1 |
+| L3 | `env.sh` + `platform.sh` | 是 | 自动探测：设备型号、核心对、目录推导、平台命令 |
+
+**换一台机器 / 换一个平台**：
+
+```bash
+git clone <repo> && cd <repo>
+cp config/harness.example.env harness.local.env    # 只改这一个文件
+# 填 ANDROID_NDK_HOME（或 ANDROID_HOME）；NDK 已是唯一工具链依赖，无 make 也可用 build.sh
+bash tools/harness/deps.sh                         # 依赖自足性检查（.ko / libksud.so / NDK / adb）
+```
+
+**运行层与依赖放哪**（自动判定，无需配置）：
+
+1. `GHOSTLOCK_WORK` / `harness.local.env` 显式指定；
+2. 否则**仓库的上一级**若已有 `*.ko` / `libksud.so` → 用它（旧布局，本机走这条）；
+3. 否则 `<REPO>/run/`（自动创建）——**新机器只拷仓库也能跑**。
+
+依赖文件本身不入库：见 `config/deps.manifest`（含文件名/字节数/md5 + 已验证构建的 NDK 版本）。
+放 `<WORK_DIR>`、`<REPO>/deps/`（已忽略）或用 `GHOSTLOCK_DEPS` 指定均可。
+
+**平台差异已收敛**：`platform.sh` 提供 `md5_of / tmo / stat_size / find_ndk / ndk_clang / host_os`，
+业务脚本不再出现 `md5sum`、`timeout`、`windows-x86_64` 这类平台限定写法（macOS 缺 `timeout`/`md5sum`
+也能跑：内建兜底 + `md5 -q`）。
+
+> ⚠️ **NDK 版本会改变产物**：已验证构建用的是 `28.2.13676358`（`ghostlock` md5 见 `config/deps.manifest`）。
+> 用别的版本构建出的二进制哈希不同，必须重跑一轮真机复验后才能当基线。
+
+---
+
 ## 第 1 步 · 侦察：把设备底细摸清
 
 **目的**：在写任何代码之前，先确定"这条路能不能走"。此步不写一行代码。

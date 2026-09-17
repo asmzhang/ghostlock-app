@@ -48,8 +48,12 @@ private data class NdkTools(val clang: String, val ar: String)
 private fun extractNdkTools(): NdkTools {
     val ndk = resolveNdkDir()
     val isWindows = System.getProperty("os.name").lowercase().contains("windows")
-    val prebuilt = if (isWindows) "windows-x86_64" else "linux-x86_64"
-    val binDir = File(ndk, "toolchains/llvm/prebuilt/$prebuilt/bin")
+    // prebuilt 目录名随宿主平台/NDK 版本变化（windows-x86_64 / darwin-x86_64 / linux-x86_64…），
+    // 探测实际存在的那个，不写死——否则 macOS 上必然失败。
+    val prebuiltRoot = File(ndk, "toolchains/llvm/prebuilt")
+    val prebuilt = prebuiltRoot.listFiles()?.firstOrNull { it.isDirectory }?.name
+        ?: error("NDK 下找不到 toolchains/llvm/prebuilt/*/：$ndk")
+    val binDir = File(prebuiltRoot, "$prebuilt/bin")
     return NdkTools(
         clang = File(
             binDir,

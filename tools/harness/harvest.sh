@@ -11,13 +11,13 @@ mkdir -p "$OUT"
 
 echo "=== 先等设备可用；一旦可用就立刻测 su（模块可能随时消失）==="
 for i in $(seq 1 40); do
-  st=$(timeout 8 adb -s $DEV shell 'echo ok' 2>/dev/null | tr -d '\r')
+  st=$(tmo 8 adb -s $DEV shell "echo ok" 2>/dev/null | tr -d '\r')
   if [ "$st" = "ok" ]; then
     echo "  device reachable (try $i)"
     echo "--- 立即：/proc/modules ---"
-    timeout 15 adb -s $DEV shell 'grep -E "kernelpatch|kernelsu" /proc/modules 2>/dev/null || echo "(no module)"'
+    tmo 15 adb -s $DEV shell "grep -E \"kernelpatch|kernelsu\" /proc/modules 2>/dev/null || echo \"(no module)\""
     echo "--- 立即：su ---"
-    timeout 15 adb -s $DEV shell 'su -c id 2>&1 | head -3'
+    tmo 15 adb -s $DEV shell "su -c id 2>&1 | head -3"
     break
   fi
   sleep 5
@@ -26,13 +26,13 @@ sleep 3
 
 pull() { # $1 = 设备路径, $2 = 本地名
   local src="$1" dst="$OUT/$2"
-  timeout 40 adb -s $DEV pull "$src" "$dst" >/dev/null 2>&1 \
+  tmo 40 adb -s $DEV pull "$src" "$dst" >/dev/null 2>&1 \
     && echo "  OK   $src -> $2 ($(stat -c%s "$dst" 2>/dev/null) B)" \
     || echo "  MISS $src"
 }
 
 echo "=== 设备侧状态 ==="
-timeout 20 adb -s $DEV shell 'cat /proc/uptime; uname -r; echo "--- modules ---"; grep -E "kernelpatch|kernelsu" /proc/modules || echo "(no module)"' 2>&1
+tmo 20 adb -s $DEV shell "cat /proc/uptime; uname -r; echo \"--- modules ---\"; grep -E \"kernelpatch|kernelsu\" /proc/modules || echo \"(no module)\"" 2>&1
 
 echo "=== 拉取证据 ==="
 pull /sdcard/ghostlock_klog                klog_sdcard.txt
@@ -56,7 +56,7 @@ else
 fi
 
 echo "=== su 是否可用（kpatch 装好后应立即可用）==="
-timeout 20 adb -s $DEV shell 'su -c id 2>&1 | head -2' 2>&1
+tmo 20 adb -s $DEV shell "su -c id 2>&1 | head -2" 2>&1
 
 echo "=== 模块加载的判据（dmesg2） ==="
 if [ -f "$OUT/dmesg2.log" ]; then

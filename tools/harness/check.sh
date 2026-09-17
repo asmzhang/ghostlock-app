@@ -10,6 +10,7 @@ set -uo pipefail
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$(cd "$HARNESS/../.." && pwd)"
+. "$HARNESS/platform.sh"   # 跨平台 stat_size/md5_of 等
 cd "$PROJ"
 
 PY="${PYTHON:-python}"
@@ -24,7 +25,7 @@ head_() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 head_ "1. 编译（NDK，零警告）"
 if out=$(bash build.sh 2>&1); then
     warn=$(printf '%s\n' "$out" | grep -c "warning:") || warn=0
-    size=$(stat -c%s ghostlock 2>/dev/null || echo '?')
+    size=$(stat_size ghostlock 2>/dev/null || echo '?')
     if [ "${warn:-0}" -eq 0 ]; then
         ok "构建通过，${size} 字节，无警告"
     else
