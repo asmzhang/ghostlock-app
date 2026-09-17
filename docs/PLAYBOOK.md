@@ -40,11 +40,22 @@ bash tools/harness/deps.sh                         # 依赖自足性检查（.ko
 放 `<WORK_DIR>`、`<REPO>/deps/`（已忽略）或用 `GHOSTLOCK_DEPS` 指定均可。
 
 **平台差异已收敛**：`platform.sh` 提供 `md5_of / tmo / stat_size / find_ndk / ndk_clang / host_os`，
-业务脚本不再出现 `md5sum`、`timeout`、`windows-x86_64` 这类平台限定写法（macOS 缺 `timeout`/`md5sum`
+业务脚本不再出现 `md5sum`、`timeout`、写死的 prebuilt 目录名这类平台限定写法（macOS 缺 `timeout`/`md5sum`
 也能跑：内建兜底 + `md5 -q`）。
 
 > ⚠️ **NDK 版本会改变产物**：已验证构建用的是 `28.2.13676358`（`ghostlock` md5 见 `config/deps.manifest`）。
 > 用别的版本构建出的二进制哈希不同，必须重跑一轮真机复验后才能当基线。
+
+**路径占位符**（文档中统一用这些；真实值只在 L1 本地配置里）：
+
+| 占位符 | 含义 |
+|---|---|
+| `<SDK>` / `<NDK>` | Android SDK 根 / NDK 根（如 `<SDK>/ndk/<版本>`） |
+| `<prebuilt>` | NDK 的 `toolchains/llvm/prebuilt/<宿主>` 目录名，按实际存在取 |
+| `<REPO>` / `<WORK_DIR>` | 本仓库根 / 运行层（默认仓库上一级，可 `GHOSTLOCK_WORK` 指定） |
+| `<ARCHIVE>` / `<ARCHIVE_DIR>` / `<REFS_DIR>` / `<HOME>` | 冻结档案仓 / 其父目录 / 素材目录 / 用户主目录 |
+
+> 文件名带日期的文档（`docs/*_2026-09-*.md`、`docs/evidence/**`）是**当时的现场记录**，其中的路径与设备串属历史事实，不代表当前环境；当前有效配置一律以 `config/harness.example.env` + L1 本地配置为准。
 
 ---
 

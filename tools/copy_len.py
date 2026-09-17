@@ -15,7 +15,7 @@ import sys
 
 # 必须用 llvm-mingw 那份: NDK 自带的不支持 --start-address。
 # 直接用 PATH 上的名字 (与 tools/stack_depth.py 一致); 若 PATH 里没有, 改成
-# "D:/platform/llvm-mingw/bin/llvm-objdump.exe" (Windows 形式, Python 不认 /d/... 这种 POSIX 路径)。
+# "<LLVM_MINGW>/bin/llvm-objdump.exe" (Windows 盘符形式；Python 不认 /d/... 这种 POSIX 路径)。
 OBJDUMP = "llvm-objdump"
 SYMS_ENTRY = re.compile(r"^(?P<addr>[0-9a-f]{8,16})\s+(?P<type>\S)\s+(?P<name>\S+)$")
 COPY = re.compile(r"bl\s+0x[0-9a-f]+\s+<([^>]*(?:copy_from_user|copy_struct_from_user|copy_to_user)[^>]*)>")

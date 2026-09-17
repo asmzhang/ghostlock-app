@@ -62,7 +62,7 @@
 
 - exploit 全部工具在**主仓** `ghostlock-main\tools\`（20 项，含 harness 全套）。
 - 16 项机型专用/侧信道工具在冻结仓 `root\ghostlock-app\tools\`（取舍清单见主仓 `docs/AUDIT_HANDOVER_2026-09-15.md` §4）。
-- 反汇编坑：objdump 用 **`/d/platform/llvm-mingw/bin/llvm-objdump`**（NDK 的不支持 `--start-address`）；
+- 反汇编坑：objdump 用 **`<LLVM_MINGW>/bin/llvm-objdump`**（NDK 的不支持 `--start-address`）；
   clang/adb/objdump 等 Windows 程序只认**盘符路径**（`D:/...`）。
 
 ## 4. 已清理项（2026-09-16，全部走回收站，可恢复）

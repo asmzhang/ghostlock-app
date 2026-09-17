@@ -68,8 +68,14 @@ config_defaults() { # L3 内置默认（优先级最低：只在 L0/L1 都没有
     GL_SELF_W2="${GL_SELF_W2:-1}"
     GL_INSMOD_ONLY="${GL_INSMOD_ONLY:-1}"
     GL_HOLD="${GL_HOLD:-1}"
+    # APatch 授权表（finish.sh）：表头/行模板/默认包名按 ROM 可覆盖
+    GL_AP_PKGS="${GL_AP_PKGS:-me.bmax.apatch}"
+    GL_AP_HEADER="${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx}"
+    GL_AP_ROW_FMT="${GL_AP_ROW_FMT:-%s,0,1,%s,0,u:r:magisk:s0}"   # 参数：包名 uid
+    GL_AP_FORCE="${GL_AP_FORCE:-0}"
     export SHIFT ROUNDS REBOOT_EVERY
     export GL_SKIP_FIXUP GL_LAYOUT GL_SELF_W2 GL_INSMOD_ONLY GL_HOLD
+    export GL_AP_PKGS GL_AP_HEADER GL_AP_ROW_FMT GL_AP_FORCE
 }
 
 config_parse_args() {
@@ -154,6 +160,7 @@ config_dump() { # 打印最终配置与来源
     printf '%-22s %s\n' 'TUNED_ENV'        "${CONFIG_TUNED_ENV:-<未使用>}"
     printf '%-22s %s\n' 'DRY_RUN'          "$DRY_RUN"
     printf '%-22s %s\n' 'exploit 开关'      "SKIP_FIXUP=${GL_SKIP_FIXUP:-1} LAYOUT=${GL_LAYOUT:-A} SELF_W2=${GL_SELF_W2:-1} INSMOD_ONLY=${GL_INSMOD_ONLY:-1} HOLD=${GL_HOLD:-1} OWNER=${GL_OWNER:-<空>}"
+    printf '%-22s %s\n' 'APatch 授权表'     "pkgs=${GL_AP_PKGS:-me.bmax.apatch} header=${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx} row=${GL_AP_ROW_FMT:-%s,0,1,%s,0,u:r:magisk:s0} force=${GL_AP_FORCE:-0}"
 }
 
 # 把 exploit 开关组装成随 adb shell 下发的环境串（唯一来源，勿在别处硬编码）

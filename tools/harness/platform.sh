@@ -73,6 +73,20 @@ tmo() { # tmo <秒> <命令...>
     return $rc
 }
 
+# ---------------------------------------------------------------- Python
+# 统一解析解释器：PYTHON（显式覆盖）→ python3 → python。脚本一律用 "$PYTHON_BIN"，
+# 不要直接写 python/python3 —— 换机器时两者不一定都存在。
+find_python() {
+    local c
+    for c in "${PYTHON:-}" python3 python; do
+        [ -n "$c" ] || continue
+        command -v "$c" >/dev/null 2>&1 && { printf '%s\n' "$c"; return 0; }
+    done
+    return 1
+}
+PYTHON_BIN="$(find_python || true)"
+export PYTHON_BIN
+
 # ---------------------------------------------------------------- Android NDK
 # 探测顺序（全部为环境/常规安装位置，**不含任何写死的本机路径**）：
 #   ANDROID_NDK_HOME → ANDROID_NDK_ROOT → ANDROID_HOME/ndk/*（取版本最高）

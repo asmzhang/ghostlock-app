@@ -56,9 +56,9 @@ L0 运行期下发       run.sh:115 把 exploit 语义常量**内联写死**后�
 | # | 位置 | 事实 | 换机影响 |
 |---|---|---|---|
 | P0-1 | `run.sh:120` ↔ 全仓 grep | `gl_tuned.env` 只写不读，USE 模式不存在 | 命中后无法一键复跑 |
-| P0-2 | `tools/harness/preflight.sh:2` | `BIN=/d/platform/Android/Sdk/ndk/28.2.13676358/.../windows-x86_64/bin` 写死 | 任意换机/换 NDK 版本/换平台都坏 |
+| P0-2 | `tools/harness/preflight.sh:2` | `BIN=<NDK>/.../<prebuilt>/bin` 写死 | 任意换机/换 NDK 版本/换平台都坏 |
 | P0-3 | `Makefile:5,7,12` | 兜底 `D:/AndroidSDK/ndk/*`；`PREBUILT` 只有 windows/linux，**无 darwin** | macOS 无法构建；本机路径兜底会误导 |
-| P0-4 | `tools/kernel_verify.py:72`、`tools/probe_tcp_route.sh:26,29,30` | 默认 `D:/platform/Android/Sdk`，写死 `windows-x86_64`、clang35/34 | 偏移提取/路由分析在新机器不可用 |
+| P0-4 | `tools/kernel_verify.py:72`、`tools/probe_tcp_route.sh:26,29,30` | 默认 `<SDK>`，写死 `<prebuilt>`、clang35/34 | 偏移提取/路由分析在新机器不可用 |
 | P0-5 | `tools/harness/*` 统计 | `timeout`×34、`md5sum`×12 | macOS 默认无 `timeout`（需 `gtimeout`）、无 `md5sum`（需 `md5 -q`） |
 | P0-6 | `build.gradle.kts:51` | `prebuilt` 仅 windows/linux | 同 P0-3 |
 
@@ -79,8 +79,8 @@ L0 运行期下发       run.sh:115 把 exploit 语义常量**内联写死**后�
 |---|---|---|
 | P2-1 | 全仓 `adb`×114 | 假设 `adb` 在 PATH，无校验/无 `ADB` 覆盖；离线脚本（`stats.sh`/`preflight.sh`）也依赖 |
 | P2-2 | `env.sh:64-66` | 设备侧根路径 `D_TMP/D_SDCARD/D_AP` 集中但**不可覆盖**（建议支持 `GHOSTLOCK_D_TMP` 等） |
-| P2-3 | `docs/*`、`README*.md` | 大量写死 `D:/platform/...` 与 NDK 版本；`python` 与 `python3` 混用（34 vs 14） |
-| P2-4 | `tools/copy_len.py:18` | 注释引用本机 `D:/platform/llvm-mingw/...`（无害但属本机信息） |
+| P2-3 | `docs/*`、`README*.md` | 大量写死工具链绝对路径与 NDK 版本；`python` 与 `python3` 混用（34 vs 14） |
+| P2-4 | `tools/copy_len.py:18` | 注释引用本机 `<LLVM_MINGW>/...`（无害但属本机信息） |
 | P2-5 | `run.sh` / `shift_scan.sh` / `retry.sh` | 日志命名不统一（`gl_tune_r*.log` / `gl_scan_*.log` / `gl_retry_r*.log`） |
 
 ## 4. 目标架构（解耦 · 模块化 · 边界 · 跨平台）
@@ -108,7 +108,7 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 
 ### 4.3 跨平台要求
 
-- `PREBUILT` 用**目录探测**（`windows-x86_64` / `darwin-x86_64` / `linux-x86_64`），不写死；
+- `PREBUILT` 用**目录探测**（windows / darwin / linux 三种宿主各取实际存在的那个），不写死；
 - `timeout` → `timeout_cmd()`（`timeout` 或 `gtimeout`）；`md5sum` → `md5_of()`（`md5sum` 或 `md5 -q`）；
 - `stat -c%s` → `stat_size()`；`python` → `PYTHON=${PYTHON:-python3}` 统一；
 - 脚本一律 LF（仓库 `* text=auto` 已保证），Windows 侧编辑后需确认未被转成 CRLF；
@@ -182,6 +182,16 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 
 ### 7.4 仍建议跟进（未做）
 
-1. `docs/**` 与 `README*.md` 里仍有写死的 `D:/platform/...` 与 NDK 版本示例（属文档层，P2-3）——建议改为占位符并指回本文件 §0/PLAYBOOK 第 0 步。
-2. `python` / `python3` 混用未统一（`check.sh` 已支持 `PYTHON` 覆盖，其余脚本按需）。
-3. 设备侧路径（`D_AP`/`D_KSU` 等）已可覆盖，但 `finish.sh` 内对 `package_config` 的表结构假设仍是硬编码语义，换 ROM 需复核。
+1. ~~文档层写死路径~~ **已解决（见 §7.5）**：全部换成 `<SDK>`/`<NDK>`/`<prebuilt>` 等占位符，README 改为自动取 NDK 版本与 prebuilt 名。
+2. ~~`python`/`python3` 混用~~ **已解决（见 §7.5）**：`platform.sh` 解析 `PYTHON_BIN`（PYTHON > python3 > python）并导出。
+3. ~~`finish.sh` 表结构硬编码~~ **已解决（见 §7.5）**：表头/行模板/默认包名改为配置项（GL_AP_*），表头不符默认拒绝写入。
+
+### 7.5 遗留项收口（同日）
+
+| 原遗留项 | 处理方式 | 验证 |
+|---|---|---|
+| ① 文档/README 写死工具链路径 | 批量替换为占位符：`<SDK>` / `<NDK>` / `<prebuilt>` / `<LLVM_MINGW>`（脚本 `externalize_docs.py`，14 行 / 9 文件）；README 中英文的交叉编译示例改为**自动取 NDK 版本与 prebuilt 目录名**；`PLAYBOOK §0` 增加占位符对照表，并注明"带日期的文档是历史现场记录" | `git grep` 复查 = 0（仅剩 `copy_len.py` 注释里作为工具名的 `llvm-mingw`，非路径） |
+| ② `python` / `python3` 混用 | `platform.sh` 新增 `find_python` 与导出 `PYTHON_BIN`（`PYTHON` > `python3` > `python`）；`check.sh` 改用它，缺失时明确报错 | 本机解析为 `python3`；`bash -n` 通过 |
+| ③ `finish.sh` 的 `package_config` 表结构硬编码 | 表头 / 行模板 / 默认包名改为配置项：`GL_AP_HEADER`、`GL_AP_ROW_FMT`（printf 格式：包名、uid）、`GL_AP_PKGS`、`GL_AP_FORCE`；表头与预期不符时**默认拒绝写入**（`exit 3`）并打印实际/预期，避免换 ROM 写坏授权表 | 真机 `finish.sh --dry-run`（只读）确认现有表头与预期一致、各步骤计划正确、设备未被改动 |
+
+附带改进：`finish.sh` 新增 `--dry-run`，可在不重启框架、不写授权表的前提下预览收尾计划（收尾窗口只有约 1 分钟，预览能力对换机后首次运行很有价值）。

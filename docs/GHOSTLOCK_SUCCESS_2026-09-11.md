@@ -89,12 +89,12 @@ panic_on_oops=0  panic_on_rcu_stall=0
 ## 三、复现步骤
 
 ```bash
-export ANDROID_HOME=D:/platform/Android/Sdk
+export ANDROID_HOME=<SDK>
 DEV=3e6f1443
 
 # 1. 编译（NDK 28.2）
 cd <ARCHIVE>
-"/d/platform/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android35-clang.cmd" \
+"<NDK>/toolchains/llvm/prebuilt/<prebuilt>/bin/aarch64-linux-android35-clang.cmd" \
   -O2 -flto -Wall -Isrc/core -Isrc/kernels -DTARGET_CONFIG_H=\"target.h\" \
   -fPIE -pie -pthread src/core/main.c src/core/offsets_json.c src/core/util.c src/core/fops.c \
   -o ghostlock

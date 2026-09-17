@@ -13,8 +13,11 @@ PROJ="$(cd "$HARNESS/../.." && pwd)"
 . "$HARNESS/platform.sh"   # 跨平台 stat_size/md5_of 等
 cd "$PROJ"
 
-PY="${PYTHON:-python}"
-command -v "$PY" >/dev/null 2>&1 || PY=""
+PY="${PYTHON:-${PYTHON_BIN:-}}"      # 平台层已解析（PYTHON 显式覆盖 > python3 > python）
+if [ -z "$PY" ]; then
+    echo "找不到 python 解释器：请装 python3，或设 PYTHON=<解释器路径>" >&2
+    exit 1
+fi
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }

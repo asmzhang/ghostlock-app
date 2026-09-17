@@ -176,7 +176,7 @@ adb shell 'for p in ro.boot.flash.locked ro.boot.verifiedbootstate ro.boot.vbmet
 
 ## 环境（本机）
 - 交叉编译独立工具（aarch64）：
-  `D:/platform/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android35-clang`
+  `<NDK>/toolchains/llvm/prebuilt/<prebuilt>/bin/aarch64-linux-android35-clang`
   `-O2 -D__ARM=1 -DCORE=6 -Isrc/core -Isrc/core/kernelsnitch -Isrc/kernels -DTARGET_CONFIG_H='"target.h"'`
 - 反汇编需 capstone：**系统 python 3.12.13 有**，managed 3.13.12 没有
 - **adb 并发调用会互踩**（`could not read ok from ADB Server`）→ 多条 adb 串行

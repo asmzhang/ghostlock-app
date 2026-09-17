@@ -18,10 +18,15 @@
 set -uo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/env.sh"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config.sh"
 require_dev || exit 1
+config_init "$@" || exit 1
 
 PKGS=("$@")
-[ ${#PKGS[@]} -eq 0 ] && PKGS=(me.bmax.apatch)
+# 默认包名来自配置（GL_AP_PKGS，空格分隔），不再写死在脚本里
+if [ ${#PKGS[@]} -eq 0 ]; then
+    read -r -a PKGS <<< "${GL_AP_PKGS:-me.bmax.apatch}"
+fi
 
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 dev_sh() { tmo 25 adb -s "$DEV" shell "$@"; }
@@ -36,6 +41,32 @@ if [ "${MODS:-0}" != "1" ]; then
     exit 2
 fi
 echo "  kpatch 已在内核中。"
+
+# 授权表现状（只读）+ 表头校验，提前做——dry-run 也要能看到结论
+CUR=$(dev_su "cat ${D_AP}/package_config" 2>/dev/null | tr -d '\r')
+CUR_HEADER="$(printf '%s\n' "$CUR" | head -1)"
+if [ -n "$CUR_HEADER" ] && [ "$CUR_HEADER" != "${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx}" ]; then
+    if [ "${GL_AP_FORCE:-0}" != 1 ]; then
+        echo "  [!] 现有 package_config 表头与预期不一致，已中止写入：" >&2
+        echo "      实际: $CUR_HEADER" >&2
+        echo "      预期: ${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx}" >&2
+        echo "      确认表结构后可用 GL_AP_HEADER=<实际表头> 覆盖，或 GL_AP_FORCE=1 强制写入。" >&2
+        exit 3
+    fi
+    echo "  [!] 表头不一致但 GL_AP_FORCE=1，继续写入"
+fi
+
+if [ "${DRY_RUN:-0}" = 1 ]; then
+    echo
+    echo "--- DRY-RUN：以下步骤不会执行（当前只读检查已完成）---"
+    echo "1) soft-reboot（${D_TMP}/libapd.so soft-reboot）→ 等 zygote running → 核对 uptime 连续增长（内核未重启）"
+    echo "2) 若 sys.boot_completed != 1 → ${D_AP}/bin/apd resetprop sys.boot_completed 1"
+    echo "3) 授权表（表头 ${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx}；现有 $([ -n "$CUR_HEADER" ] && echo 1 || echo 0) 行表头）："
+    echo "   包名=${GL_AP_PKGS:-me.bmax.apatch}  新行模板=${GL_AP_ROW_FMT:-%s,0,1,%s,0,u:r:magisk:s0}"
+    echo "4) 重启管理器：am force-stop/start <包名>"
+    echo "5) 终验：su -c id / grep kernelpatch /proc/modules / 管理器 UID=0 子进程"
+    exit 0
+fi
 
 # ---------------------------------------------------------------- 1. 软重启
 say "1. 软重启（只重启框架，内核与模块保留）"
@@ -80,8 +111,8 @@ else
 fi
 
 # 读取现有条目 -> 合并缺失 -> 用 rename 落地（rename 才会触发 inotify）
-CUR=$(dev_su "cat ${D_AP}/package_config" 2>/dev/null | tr -d '\r')
-NEW="pkg,exclude,allow,uid,to_uid,sctx"
+# （CUR 读取与表头校验已在步骤 0 之后完成）
+NEW="${GL_AP_HEADER:-pkg,exclude,allow,uid,to_uid,sctx}"
 ADDED=0
 for pkg in "${PKGS[@]}"; do
     uid=$(dev_sh "dumpsys package $pkg 2>/dev/null | grep -m1 userId" | tr -d '\r' | grep -oE '[0-9]+')
@@ -93,7 +124,7 @@ for pkg in "${PKGS[@]}"; do
         echo "  [已有] $pkg (uid=$uid)"
         NEW="${NEW}"$'\n'"$(printf '%s\n' "$CUR" | grep "^${pkg},")"
     else
-        NEW="${NEW}"$'\n'"${pkg},0,1,${uid},0,u:r:magisk:s0"
+        NEW="${NEW}"$'\n'"$(printf "${GL_AP_ROW_FMT:-%s,0,1,%s,0,u:r:magisk:s0}" "$pkg" "$uid")"
         ADDED=$((ADDED + 1))
         echo "  [新增] $pkg (uid=$uid)"
     fi

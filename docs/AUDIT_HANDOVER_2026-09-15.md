@@ -83,7 +83,7 @@ git ls-tree -r --name-only 347dfec | wc -l          # 期望: 113
 git ls-files | wc -l                                 # 期望: 113（仅代码追踪；新增文档/工具为未跟踪）
 
 # 3) 可构建性 + 指纹（需 NDK）
-make NDK_ROOT=D:/platform/Android/Sdk/ndk/28.2.13676358 ghostlock
+make NDK_ROOT=<NDK> ghostlock
 md5sum ghostlock       # 期望: 36430a2fbb2c42c243acf9a8698d169e（100880 字节）
 md5sum artifacts/2026-09-15/ghostlock-347dfec-100880   # 期望: 同上
 

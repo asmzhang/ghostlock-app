@@ -22,14 +22,14 @@
 ## 2. 完整步骤（本轮实际执行并验证过的）
 
 ```bash
-export ANDROID_HOME=D:/platform/Android/Sdk ; DEV=3e6f1443
+export ANDROID_HOME=<SDK> ; DEV=3e6f1443
 
 # ① 取正确提交并构建（worktree 用相对路径；root_template.h 是生成物，需从当前树拷入）
 cd <ARCHIVE>
 git worktree add _head_347 347dfec
 cp src/core/root_template.h _head_347/src/core/root_template.h
 cd _head_347
-"/d/platform/Android/Sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/windows-x86_64/bin/aarch64-linux-android35-clang" \
+"<NDK>/toolchains/llvm/prebuilt/<prebuilt>/bin/aarch64-linux-android35-clang" \
   -O2 -flto -Wall -Isrc/core -Isrc/kernels -DTARGET_CONFIG_H=\"target.h\" \
   -fPIE -pie -pthread src/core/main.c src/core/offsets_json.c src/core/util.c src/core/fops.c \
   -o ghostlock_doc                                  # ⇒ 100880 字节

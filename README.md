@@ -95,7 +95,9 @@ running inside the app sandbox. Cross-compile and push:
 
 ```powershell
 rustup target add aarch64-linux-android
-$ndk = "$env:ANDROID_HOME\ndk\29.0.14206865\toolchains\llvm\prebuilt\windows-x86_64\bin"
+$ndkRoot = "$env:ANDROID_HOME\ndk\" + (Get-ChildItem "$env:ANDROID_HOME\ndk" -Directory | Sort-Object Name -Descending | Select-Object -First 1).Name
+# <prebuilt> = the one that actually exists there (windows-x86_64 / darwin-x86_64 / linux-x86_64); do not hardcode
+$ndk = "$ndkRoot\toolchains\llvm\prebuilt\<prebuilt>\bin"
 $env:CC_aarch64_linux_android = "$ndk\aarch64-linux-android35-clang.cmd"
 $env:AR_aarch64_linux_android = "$ndk\llvm-ar.exe"
 $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $env:CC_aarch64_linux_android
