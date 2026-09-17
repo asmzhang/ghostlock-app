@@ -12,7 +12,7 @@
 
 ## 第 0 步 · 配置与换机（只带仓库也能跑）
 
-**四层配置，优先级从高到低**（查看最终生效值：`bash tools/harness/run.sh --print-config`）：
+**四层配置，优先级从高到低**（查看最终生效值：`python3 tools/harness/harness.py config`）：
 
 | 层 | 位置 | 是否入库 | 放什么 |
 |---|---|---|---|
@@ -26,9 +26,15 @@
 ```bash
 git clone <repo> && cd <repo>
 cp config/harness.example.env harness.local.env    # 只改这一个文件
-# 填 ANDROID_NDK_HOME（或 ANDROID_HOME）；NDK 已是唯一工具链依赖，无 make 也可用 build.sh
-bash tools/harness/deps.sh                         # 依赖自足性检查（.ko / libksud.so / NDK / adb）
+# 填 ANDROID_NDK_HOME（或 ANDROID_HOME）
+python3 tools/harness/harness.py deps              # 依赖自足性检查（.ko / libksud.so / NDK / adb）
+python3 tools/harness/harness.py config            # 看一眼最终生效配置
 ```
+
+> harness 主流程是 **Python**（`tools/harness/harness.py` + `tools/harness/ghostlock/` 包），只需要 python3：
+> 路径、哈希、超时、进程管理全部走标准库，**不依赖 coreutils**（timeout / md5sum / stat），
+> 因此 Windows(Git Bash) / Linux / macOS 行为一致。
+> 子命令：`deps` / `run` / `root` / `finish` / `stats` / `config`。
 
 **运行层与依赖放哪**（自动判定，无需配置）：
 
@@ -39,7 +45,7 @@ bash tools/harness/deps.sh                         # 依赖自足性检查（.ko
 依赖文件本身不入库：见 `config/deps.manifest`（含文件名/字节数/md5 + 已验证构建的 NDK 版本）。
 放 `<WORK_DIR>`、`<REPO>/deps/`（已忽略）或用 `GHOSTLOCK_DEPS` 指定均可。
 
-**平台差异已收敛**：`platform.sh` 提供 `md5_of / tmo / stat_size / find_ndk / ndk_clang / host_os`，
+**平台差异已收敛**：主流程用 Python（`ghostlock/plat.py`：md5=`hashlib`、超时=`subprocess timeout`、NDK=`find_ndk`），
 业务脚本不再出现 `md5sum`、`timeout`、写死的 prebuilt 目录名这类平台限定写法（macOS 缺 `timeout`/`md5sum`
 也能跑：内建兜底 + `md5 -q`）。
 
@@ -101,7 +107,7 @@ adb -s $GHOSTLOCK_DEV shell 'cat /proc/cmdline' | tr ' ' '\n' | grep -iE "panic|
 **目的**：用零成本判定"目标 `.ko` 能不能被加载"，避免白跑一轮命中。
 
 ```bash
-bash tools/harness/preflight.sh
+python3 tools/harness/harness.py preflight.sh
 ```
 
 判据：输出里每一项的 `NOT in device kallsyms` **必须是 0**。
@@ -144,7 +150,7 @@ cd ../.. && bash build.sh
 构建完先跑一次离线自检，不要急着上机：
 
 ```bash
-bash tools/harness/check.sh      # 18 项：编译/语法/模板无损/符号预检/产物未入库
+python3 tools/harness/harness.py check.sh      # 18 项：编译/语法/模板无损/符号预检/产物未入库
 ```
 
 > 本机构建有两个坑已写进 `build.sh`：
@@ -159,17 +165,17 @@ bash tools/harness/check.sh      # 18 项：编译/语法/模板无损/符号预
 
 ```bash
 cd <运行目录>                                      # 放 .ko 与日志的地方
-bash <项目>/tools/harness/run.sh > gl_run.out 2>&1 &
-bash <项目>/tools/harness/watcher.sh
+python3 <项目>/tools/harness/harness.py run --rounds 30 > gl_run.out 2>&1
+python3 <项目>/tools/harness/harness.py root         # 或直接用一键入口：内置后台监视 + 收尾 + 终验
 ```
 
-**为什么必须两条**：
-`run.sh` 里的 `timeout N adb shell ./ghostlock` 会**一直阻塞到进程退出**，
+**为什么必须两条线**（`root` 子命令内部已经这么做了）：
+`adb shell ./ghostlock` 会**一直阻塞到进程退出**，
 而提权成功后进程会原地保活数百秒 —— 等它返回时设备早已重启。
-所以检查必须由**另一条独立的轮询**（`watcher.sh` 直接盯 `/proc/modules`）来做。
+所以命中检测必须由**另一条独立的轮询**（`ghostlock/device.py` 的 `Watcher`，直接盯 `/proc/modules`）来做。
 早期所有"命中后设备失联"的判断，绝大多数是**检查方式错了，不是设备崩了**。
 
-启动 `run.sh` 时的注意点：
+单独跑 `run` 时的注意点：
 - **命令里不要加 `&` 再跟其它命令** —— 进程链会被一起清理，表现为"设备不重启但也没有进展"，极易误判成设备稳定。
 
 预期：单轮 60~70 秒（大头是 PANIC 后等重启），**单轮命中率 5~8%**，
@@ -178,8 +184,9 @@ bash <项目>/tools/harness/watcher.sh
 **想少盯屏：一条命令跑完整个流程**
 
 ```bash
-bash tools/harness/root.sh --rounds 30     # 自检 → 后台 watcher → TUNE → 命中即停 → 收尾 → 终验
-bash tools/harness/root.sh --dry-run       # 先看计划，不碰设备
+python3 tools/harness/harness.py root --rounds 30   # 自检 → 后台监视 → TUNE → 命中即停 → 收尾 → 终验
+python3 tools/harness/harness.py root --dry-run     # 先看计划，不碰设备
+python3 tools/harness/harness.py run  --rounds 30   # 只要循环（自己另开监视与收尾）
 ```
 
 它把上面两条线 + 第 5 步收尾编排成一条命令，退出码语义：
@@ -193,7 +200,7 @@ bash tools/harness/root.sh --dry-run       # 先看计划，不碰设备
 ## 第 5 步 · 收尾 + 验证（窗口只有约 1 分钟，务必脚本化）
 
 ```bash
-bash <项目>/tools/harness/finish.sh
+python3 <项目>/tools/harness/harness.py finish
 ```
 
 它按顺序做四件事，**幂等、无命中时安全退出**：

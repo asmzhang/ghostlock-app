@@ -216,3 +216,42 @@ L3  env.sh 内置默认 + 自动探测（设备型号/频率/目录推导）
 
 若确需在仓库留痕，建议只留一份**结论锚点**（日期 / 机型 / `uname -r` / 轮数 / 终验输出 / 产物 md5，约 10 行），
 而不是原始日志；原始证据保留在本机 `harvest_hit/`。
+
+### 7.7 harness 主流程 Python 化（同日，按"shell 不通用"的要求）
+
+**动机**：bash 版依赖 coreutils（`timeout` / `md5sum` / `stat`）与 MSYS 路径行为，
+Windows(Git Bash) / Linux / macOS 三者不一致；Python 只有一个运行时依赖，路径/哈希/超时/进程管理都是标准库行为。
+
+**结构**（模块边界清晰，各自单一职责）：
+
+| 文件 | 职责 |
+|---|---|
+| `tools/harness/harness.py` | 入口（解析命令行、分派子命令） |
+| `tools/harness/ghostlock/plat.py` | 平台层：md5(`hashlib`)、超时(`subprocess`)、文件大小、NDK 与 adb 探测、路径正斜杠化 |
+| `tools/harness/ghostlock/config.py` | 四层配置（L0 CLI/env ＞ L1 `harness.local.env` ＞ L3 默认+探测）、目录解析（WORK_DIR 三档）、校验 |
+| `tools/harness/ghostlock/device.py` | 设备层：adb 封装、设备/核心对探测、推送校验、`Watcher`（独立线程盯 `/proc/modules`）、收尾流程 |
+| `tools/harness/ghostlock/flow.py` | 编排：`deps` / `run`(tune\|use) / `root` 一键 / `stats` |
+| `tools/harness/ghostlock/cli.py` | 命令行定义与 `config` 打印 |
+
+**子命令**：`deps`（换机第一步）、`run`、`root`（一键：自检→监视→循环→命中即停→收尾→终验）、
+`finish`（幂等，含 `--dry-run` 只读预览）、`stats`、`config`；
+全局选项：`--dry-run` / `--print-config` / `--mode` / `--device` / `--rounds` / `--shift` / `--no-finish` / `--skip-preflight`。
+
+**与 bash 版的行为一致性验证**
+
+| 项 | 结果 |
+|---|---|
+| `run --dry-run` 下发的设备命令 | 与 bash 版**逐字符一致**（8 个 `GHOSTLOCK_*` 同值） |
+| `deps` | 全绿（依赖 md5 匹配、NDK/clang/adb 均已定位） |
+| `stats` | 13 轮 / 1 命中 / 12 PANIC，与 bash 版一致 |
+| `finish --dry-run` | 真机只读通过：表头匹配、计划正确、设备未被改动 |
+| `root --dry-run` | 6 阶段计划正确 |
+| 构建产物 | md5 `4bb625f8…` 未变 |
+| 全部模块 `py_compile` | 通过 |
+
+**删除**：`run/watcher/finish/deps/stats/root/config` 共 7 个 `.sh`（历史仍在 git 中）。
+**保留**：`env.sh` + `platform.sh` 作为薄适配层，供 4 个**离线/探索脚本**（`retry.sh`、`harvest.sh`、
+`shift_scan.sh`、`check_stride.sh`）与自检脚本 `check.sh` 使用——它们不在主流程内，是否一并移植待定。
+
+**实现要点**：L1 本地配置里的 `ANDROID_*` 会注入进程环境供 NDK 探测（不覆盖已有环境变量）；
+所有传给 adb 的路径统一转正斜杠（adb.exe 只认盘符路径，反斜杠与 POSIX 形式会静默失败）。
