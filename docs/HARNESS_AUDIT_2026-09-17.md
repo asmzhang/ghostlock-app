@@ -255,3 +255,27 @@ Windows(Git Bash) / Linux / macOS 三者不一致；Python 只有一个运行时
 
 **实现要点**：L1 本地配置里的 `ANDROID_*` 会注入进程环境供 NDK 探测（不覆盖已有环境变量）；
 所有传给 adb 的路径统一转正斜杠（adb.exe 只认盘符路径，反斜杠与 POSIX 形式会静默失败）。
+
+### 7.8 Python 版端到端真机验证（2026-09-17）
+
+**命令**：`python3 tools/harness/harness.py root --rounds 30`
+**起点**：`adb reboot` 后的干净基线（uptime 25 s、`kernelpatch` 模块=0、无 `su`）
+
+**结果：一次跑通，退出码 0**
+
+| 项 | 实测 |
+|---|---|
+| 命中 | **第 16 轮**（11:17:23 起跑 → 11:33:45 SUCCESS → 11:40:12 结束） |
+| 分类统计 | `hit=1 panic=15 safe=0`（命中率 6.3%，落在历史 5–8% 区间） |
+| 命中监视 | `Watcher` 11:34:44 检出模块（基线判定生效：起跑时模块=0，出现即命中） |
+| 自动收尾 | soft-reboot → 修正 `sys.boot_completed` → 授权表幂等合并（`me.bmax.apatch` 已有则保留，`bin.mt.plus` 未被覆盖）→ 重启管理器 |
+| 终验 | `uid=0(root) gid=0(root) … context=u:r:magisk:s0` |
+| 退出码 | `0` —— 与设计语义（已 root 且终验通过）一致 |
+| 参数锁定 | `gl_tuned.env` 由 Python 版正常写入：`SHIFT=-2 CORE=4 CCORE=5 DATE=2026-09-17 11:40:03` |
+
+**测试过程中发现并修复的 3 个缺陷**（提交 `b3b4279`）：① `stage()` 比对设备 `md5sum` 时漏取首字段
+（等价 `| cut -d' ' -f1`），导致每轮都判 `stage failed`；② 输出块缓冲导致重定向日志长时间为空；
+③ `Watcher` 把设备上**遗留**模块当命中（改为"基线 + 消失后重现"）。
+
+**结论**：Python 版与 bash 版行为一致，且**能真正拿到 root**；`--rounds 1` 是最便宜的试金石
+（dry-run 只验证命令拼装，验不出推送校验/分类/退出码这类问题）。
