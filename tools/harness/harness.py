@@ -13,6 +13,14 @@ Windows(Git Bash) / Linux / macOS 表现不一致；Python 只有一个运行时
 import sys
 from pathlib import Path
 
+# 输出改为行缓冲：脚本常被重定向到日志文件（> gl_run.out），
+# 默认块缓冲会让日志在长时间运行期间一直为空（实测踩过一次）。
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:  # pragma: no cover - 老解释器没有 reconfigure
+    pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from ghostlock.cli import main  # noqa: E402

@@ -19,6 +19,10 @@ def ok(msg: str) -> None:
     print(f"  {GREEN}OK{RESET}   {msg}")
 
 
+def to_display(items: list[str], keep: int = 8) -> str:
+    return " ".join((x[:keep] + "…") if len(x) > keep else x for x in items)
+
+
 def bad(msg: str) -> None:
     print(f"  {RED}FAIL{RESET} {msg}")
 
@@ -145,19 +149,28 @@ def stage(dev: Device, cfg: Config, log=print) -> bool:
         dev.push(cfg.ksud_path, f"{d_sdcard}/ghostlock_ko/ksud")
         dev.shell(f"chmod 755 {d_tmp}/ghostlock; chmod 644 {d_tmp}/kernelpatch.ko")
         time.sleep(5)
-        got = dev.shell(f"md5sum {d_tmp}/ghostlock {d_tmp}/kernelpatch.ko").split()
+        # 设备侧 md5sum 输出是 "<哈希>  <路径>"，只取每行的第一个字段（哈希）——
+        # 直接 split() 会把路径也当成哈希来比，导致永远不相等（实测踩过）。
+        raw = dev.shell(f"md5sum {d_tmp}/ghostlock {d_tmp}/kernelpatch.ko")
+        got = [ln.split()[0] for ln in raw.splitlines() if ln.strip()]
         if len(got) >= 2 and got[0] == expect_bin and got[1] == expect_ko:
             log("stage ok (round verified after rollback window)")
             return True
-        log(f"stage retry {i}: got [{' '.join(got)}]")
+        log(f"stage retry {i}: got [{to_display(got)}] (expect {expect_bin[:8]}… {expect_ko[:8]}…)")
         time.sleep(4)
     return False
 
 
 # ---------------------------------------------------------------- 命中监视
 class Watcher(threading.Thread):
-    """独立盯 /proc/modules：run.sh 的 adb shell 会阻塞到 exploit 退出（保活数百秒），
-    等它返回时设备往往已重启 —— 所以命中检测必须由独立轮询来做。"""
+    """独立盯 /proc/modules：`adb shell ./ghostlock` 会阻塞到 exploit 退出（保活数百秒），
+    等它返回时设备往往已重启 —— 所以命中检测必须由独立轮询来做。
+
+    判定规则（实测修正）：不是"见到模块就算命中"，而是**基线 + 消失后重现**：
+      * 起始基线=0（干净）→ 模块出现即命中；
+      * 起始基线=1（设备上已有遗留模块，如上一轮 root 还没丢）→ 先等它消失（一次 panic
+        就会清空），消失后再出现才算命中。否则会在开跑瞬间误报。
+    """
 
     def __init__(self, dev: Device, cfg: Config, interval: float = 3.0, max_polls: int = 1600):
         super().__init__(daemon=True)
@@ -167,6 +180,7 @@ class Watcher(threading.Thread):
         self.harvest_dir = cfg.log_dir / "harvest_hit"
         self.detected = False
         self.detected_at: str | None = None
+        self.baseline = -1
         self._stop = threading.Event()
 
     def _log(self, msg: str) -> None:
@@ -184,11 +198,19 @@ class Watcher(threading.Thread):
             encoding="utf-8",
         )
         self.harvest_dir.mkdir(parents=True, exist_ok=True)
+        self.baseline = self.dev.modules_count()
+        seen_absent = self.baseline == 0
+        if not seen_absent:
+            self._log(f"NOTE: 起始时模块已存在（遗留 root？baseline={self.baseline}）——"
+                      f"将等它消失后再出现才算命中（一次 panic 即会清空）")
         for _ in range(self.max_polls):
             if self._stop.is_set():
                 self._log("watcher stopped by caller")
                 return
-            if self.dev.modules_count() == 1:
+            count = self.dev.modules_count()
+            if count == 0:
+                seen_absent = True
+            elif count == 1 and seen_absent:
                 self.detected = True
                 self.detected_at = time.strftime("%H:%M:%S")
                 self._log("*** MODULE DETECTED in /proc/modules ***")
