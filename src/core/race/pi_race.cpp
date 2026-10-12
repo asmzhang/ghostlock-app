@@ -26,6 +26,7 @@ bool ghostlock::race::PiRace::reset(
     consumer_calls.store(0, std::memory_order_relaxed);
     consumer_success.store(0, std::memory_order_relaxed);
     consumer_inflight.store(0, std::memory_order_relaxed);
+    consumer_gate_syscall.store(0, std::memory_order_relaxed);
     route_delay_usec.store(initial_delay_usec,
                            std::memory_order_relaxed);
     fast_repair.store(0, std::memory_order_relaxed);

@@ -111,6 +111,11 @@ int main(int argc, char **argv) {
          * successful early stop (objective already met), not a full run. */
         const runtime::RunResult result = runtime::run_orchestrated_pipeline(
             session, selection, decoded, dump_dir, force_attack);
+        /* P0-1: park a holder process while the reclaim sockets are still open.
+         * Their close path releases a page that was never refcounted, which on
+         * this kernel (panic_on_oops) reboots the device right after a win.
+         * The holder is idempotent and a no-op once no page is live. */
+        support::hold_reclaim_sockets_until_exit();
         switch (result.code) {
             case runtime::RunCode::Rejected:
                 pr_error("orchestrator rejected the component selection\n");

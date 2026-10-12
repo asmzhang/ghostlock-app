@@ -52,6 +52,8 @@ namespace ghostlock::support {
 
     void discard_prebuilt_page(void);
 
+    void hold_reclaim_sockets_until_exit(void);
+
     void cleanup_page_prepare_state(void);
 
     int32_t clone_memfd(void);

@@ -270,6 +270,15 @@ namespace ghostlock::profile {
             return loaded_ && values_.misc.compact_waiter.value_or(0) != 0;
         }
 
+        /* The ordinal behind has_compact_waiter(): 0 is the 6.6 rb_node waiter,
+ * 1 the 6.1 compact one, 2 the 5.10 compact one. Callers that only care
+ * whether the waiter is compact keep using has_compact_waiter(); callers that
+ * emit the trailing words must switch on this, because 6.1 and 5.10 disagree
+ * past offset 0x40. See kernel/waiter_layout.hpp for the exact shapes. */
+        [[nodiscard]] uint8_t compact_waiter_kind() const noexcept {
+            return loaded_ ? values_.misc.compact_waiter.value_or(0) : 0;
+        }
+
         [[nodiscard]] bool safe_mode() const noexcept {
             return loaded_ && values_.meta.safe_mode;
         }

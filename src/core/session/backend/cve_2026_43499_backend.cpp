@@ -260,6 +260,24 @@ namespace ghostlock::session::backend {
                 return true;
             }
 
+            /* w3_attempts = 0 disables the stage from the profile. W3 only
+             * exists to unblock the KernelSU late-load: run_root_child_handoff()
+             * returns Done on every branch, so uid 0 is already secured by W2.
+             * It is also the most expensive stage on a route that survives by
+             * chance -- the leaf direction probe alone is 4 pselects and each
+             * attempt adds two more writes, and on a kernel built with
+             * panic_on_oops a single missed pselect reboots the device. Skip
+             * before the probe, not inside the write loop, or the probe still
+             * fires. Returns true so the caller stops the W2/W3 chain instead of
+             * respawning a rooted child to retry a stage we deliberately
+             * skipped; seccomp_ok stays 0 so the handoff reports the filter as
+             * still armed. */
+            if (session.profile.w3_attempts() == 0) {
+                pr_warning("W3 disabled by profile (w3_attempts=0); leaving the app seccomp filter armed\n");
+                seccomp_ok = 0;
+                return true;
+            }
+
             constexpr bool exact_target = M::w3_exact_target;
             victim::w3_stage_context w3_context = {
                 .pipes = pipes,
@@ -430,6 +448,7 @@ namespace ghostlock::session::backend {
         kernel::set_unbuffer();
         signal(SIGPIPE, SIG_IGN);
         kernel::set_limit();
+        route::reserve_low_fds();
         route::reserve_standard_io();
         if (config::runtime_config_snapshot().init() != 0) {
             pr_error("runtime configuration failed errno=%d\n", errno);

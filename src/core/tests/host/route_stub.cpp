@@ -17,6 +17,8 @@ namespace ghostlock::route::middleware {
 } // namespace ghostlock::route::middleware
 
 namespace ghostlock::route {
+    void reserve_low_fds(void) {}
+
     void reserve_standard_io(void) {}
 
     RouteStatus do_pselect_fake_lock_route(const ghostlock::memory::WriteRequest *request) {

@@ -31,6 +31,7 @@ CXX_SRCS := \
   core/race/threads.cpp \
   core/route/tcp_zerocopy_route.cpp \
   core/route/select_stack_route.cpp \
+  core/route/waiter_words.cpp \
   core/route/multicast_waiter_route.cpp \
   core/memory/payload_builder.cpp \
   core/session/runtime_config.cpp \
@@ -121,7 +122,9 @@ NATIVE_HOST_TESTS := \
   target_constants_test native_resource_test \
   profile_binary_test futex_hash_test number_parse_test \
   runtime_paths_test handoff_probe_test victim_context_test \
-  run_state_test address_space_test cpp_link_probe_test
+  run_state_test address_space_test syscall_snapshot_test \
+  waiter_words_test \
+  cpp_link_probe_test
 
 native-host-tests: $(addprefix $(HOST_BUILD_DIR)/,$(NATIVE_HOST_TESTS))
 	@status=0; for test in $^; do $$test || status=1; done; exit $$status
@@ -249,6 +252,14 @@ $(HOST_BUILD_DIR)/heap_context_test: core/tests/heap_context_test.cpp core/memor
 $(HOST_BUILD_DIR)/kernelsnitch_scan_bounds_test: core/tests/kernelsnitch_scan_bounds_test.cpp core/kernelsnitch/scan_bounds.h
 	@mkdir -p $(HOST_BUILD_DIR)
 	$(HOST_CXX) $(HOST_CXXFLAGS) -Icore $< -o $@
+
+$(HOST_BUILD_DIR)/syscall_snapshot_test: core/tests/syscall_snapshot_test.cpp core/support/syscall_snapshot.hpp
+	@mkdir -p $(HOST_BUILD_DIR)
+	$(HOST_CXX) $(HOST_CXXFLAGS) -Icore $< -o $@
+
+$(HOST_BUILD_DIR)/waiter_words_test: core/tests/waiter_words_test.cpp core/route/waiter_words.cpp core/route/route_api.hpp core/kernel/waiter_layout.hpp core/memory/payload_builder.cpp core/memory/payload_builder.h
+	@mkdir -p $(HOST_BUILD_DIR)
+	$(HOST_CXX) $(HOST_CXXFLAGS) -Icore core/tests/waiter_words_test.cpp core/route/waiter_words.cpp core/memory/payload_builder.cpp -o $@
 
 $(HOST_BUILD_DIR)/route_controller_test: core/tests/route_controller_test.cpp core/route/route_controller.cpp core/support/native_resource.cpp core/support/native_resource.hpp
 	@mkdir -p $(HOST_BUILD_DIR)

