@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <sys/stat.h>
 
 using namespace ghostlock;
 
@@ -66,6 +67,16 @@ int main(int argc, char **argv) {
             return 1;
         }
         support::run_state::configure(status_record);
+
+        /* Evidence directory, created while we are still the app uid. If the
+         * rooted child creates it first it comes out 0700 root:root, and the
+         * inherited umask keeps it that way even with mode 0777 - adb shell then
+         * gets EACCES on path traversal and cannot read the kernel-log recorder
+         * (0644 or not). Owning the directory from the app side keeps the
+         * wedge-time kernel record pullable. Failure is harmless: the reader
+         * falls back to the app files dir. */
+        (void) mkdir("/data/local/tmp/glkfx", 0777);
+        (void) chmod("/data/local/tmp/glkfx", 0777);
 
         int32_t loaded;
         if (prebuilt_path != nullptr) {

