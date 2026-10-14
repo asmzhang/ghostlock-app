@@ -9,7 +9,13 @@ param(
     # means the next miss would freeze the kernel instead of rebooting. For work
     # that needs many rounds (measuring landing rates) reboot after each hit so
     # the watchdog is armed again and SELinux is back to Enforcing.
-    [switch]$RebootAfterHit
+    [switch]$RebootAfterHit,
+    # v4.8: reboot after every Nth HIT-ROOT instead of after every one. Same-boot
+    # runs skip W1 (check_selinux_off() short-circuits the SELinux stage once the
+    # first hit left the policy permissive), so each later round needs one pselect
+    # instead of two -- and a miss after a hit freezes (watchdog already unbound)
+    # rather than rebooting, which the FREEZE recovery path handles. N=0 disables.
+    [int]$RebootEveryHits = 0
 )
 
 # v4 of trials_ps3.ps1. Root cause fixed: after a HIT-ROOT the app pops the
@@ -24,6 +30,8 @@ $adb = "adb"
 $out = Join-Path (Get-Location) "build/510profile/$Tag"
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 $summary = Join-Path $out "summary.txt"
+# v4.8: HIT-ROOT counter for -RebootEveryHits.
+$hitCount = 0
 
 function Test-Dev {
     $st = (& $adb -s $Dev get-state 2>$null) -join ""
@@ -318,8 +326,13 @@ for ($r = 1; $r -le $Rounds; $r++) {
         break
     }
 
-    if ($RebootAfterHit -and $verdict -eq "HIT-ROOT") {
-        "=== rebooting to re-arm the watchdog (RebootAfterHit) ===" | Add-Content $summary
+    if ($verdict -eq "HIT-ROOT") { $hitCount++ }
+    $periodicReboot = ($RebootEveryHits -gt 0 -and $verdict -eq "HIT-ROOT" -and
+                       ($hitCount % $RebootEveryHits) -eq 0)
+    if (($RebootAfterHit -and $verdict -eq "HIT-ROOT") -or $periodicReboot) {
+        $why = if ($RebootAfterHit) { "RebootAfterHit" }
+               else { "RebootEveryHits=$RebootEveryHits at hit #$hitCount" }
+        "=== rebooting to re-arm the watchdog ($why) ===" | Add-Content $summary
         Write-Output "=== reboot after hit ==="
         # The -s $Dev selector is mandatory: other devices are usually attached
         # and a bare `adb reboot` fails with "more than one device/emulator",
