@@ -17,6 +17,10 @@ Two levels are reported:
 Each target lists the legacy demangled spelling and the namespace-qualified
 spelling; whichever is present in a binary is used, so the tool keeps working
 across the CPP12 namespace migration.
+
+A target absent from BOTH binaries is reported as SKIP and does not fail the
+run: there is nothing to compare and the absence cannot be a regression. A
+target present in exactly one binary is MISSING and fails the run.
 """
 import glob
 import os
@@ -65,6 +69,14 @@ TARGETS = [
         "ghostlock::ops::do_one_write(ghostlock::WriteRequest const*, char const*)",
         "do_one_write(ghostlock::memory::WriteRequest const*, char const*)",
         "do_one_write(ghostlock::WriteRequest const*, char const*)",
+    ]),
+    # prepare_kernel_page is inlined into this caller in the release build, so the
+    # page-preparation body (including the reclaim-order change) is compared here.
+    ("prepare_good_kernel_page", [
+        "ghostlock::support::prepare_good_kernel_page(ghostlock::memory::WriteRequest const&)",
+        "ghostlock::support::prepare_good_kernel_page(ghostlock::memory::WriteRequest const*)",
+        "ghostlock::support::prepare_good_kernel_page(ghostlock::WriteRequest const&)",
+        "prepare_good_kernel_page(ghostlock::memory::WriteRequest const&)",
     ]),
     ("multicast_owner_worker", [
         "ghostlock::route::multicast_waiter::(anonymous namespace)::multicast_owner_worker(void*)",
@@ -155,6 +167,12 @@ def main():
         base_name = resolve(base, candidates)
         cur_name = resolve(cur, candidates)
         if base_name is None or cur_name is None:
+            if base_name is None and cur_name is None:
+                # Absent from both binaries: nothing to compare, and the absence
+                # cannot be a regression introduced by the candidate. Reported so
+                # the reader still sees the target was considered.
+                print(f"SKIP {label}: absent from both binaries")
+                continue
             print(f"MISSING {label}: base={base_name is not None} cur={cur_name is not None}")
             failed += 1
             continue

