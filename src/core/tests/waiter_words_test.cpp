@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "kernel/target_constants.hpp"
 #include "kernel/waiter_layout.hpp"
 
 using namespace ghostlock;
@@ -51,29 +52,35 @@ int32_t main(void) {
     }
 
     /* --- 5.10 compact, leaf write (preserve_child == 0, i.e. W3): fake_right is
-     * zero, so pc must fall back to target - 8 instead of leaving the node
-     * parentless. relinking left at 0 is what layout.left (never assigned)
-     * encodes on the payload side. --- */
+     * zero, so pc must fall back to the planted black node rather than leaving
+     * the node parentless (pc = 0) or parenting it on the slab word at
+     * target - 8, which makes rb_insert_color() walk garbage. relinking left at
+     * 0 is what layout.left (never assigned) encodes on the payload side. --- */
     {
         const size_t count = route::select_stack_waiter_words(
             kernel::COMPACT_WAITER_5_10, kTarget, 0, kFakeTask, kFakeLock, words,
             std::size(words));
         assert(count == 10);
-        assert(find_word(words, count, 2)->value == kTarget - 8);
-        assert(find_word(words, count, 5)->value == kTarget - 8);
+        const uint64_t black_node =
+                kFakeLock + target::payload::kRelinkNodeOffset;
+        assert(find_word(words, count, 2)->value == black_node);
+        assert(find_word(words, count, 5)->value == black_node);
         assert(find_word(words, count, 4)->value == 0);
         assert(find_word(words, count, 7)->value == 0);
-        /* A parentless node is the failure this arm exists to prevent. */
+        /* A parentless node is the failure this arm exists to prevent; a node
+         * parented on target - 8 is the freeze it must not reintroduce. */
         assert(find_word(words, count, 2)->value != 0);
-        assert(find_word(words, count, 5)->value != 0);
+        assert(find_word(words, count, 2)->value != kTarget - 8);
+        assert(find_word(words, count, 5)->value != kTarget - 8);
         assert(find_word(words, count, 8)->value == kFakeTask);
         assert(find_word(words, count, 9)->value == kFakeLock);
     }
 
-    /* --- The leaf fallback matches what encode_compact_waiter() writes into
-     * pi_tree_entry for the same request: 0x18 = target - 8, 0x20 = 0,
-     * 0x28 = layout.left (always 0). Word 5 is pi_tree_entry.rb_parent_color
-     * and word 7 is pi_tree_entry.rb_left. --- */
+    /* --- The leaf arm deliberately diverges from what encode_compact_waiter()
+     * writes into the payload waiter's pi_tree_entry (0x18 = target - 8). That
+     * value is the payload-side mechanism for storing 0 at the target; as the
+     * on-stack waiter's parent it freezes the walk. Word 5 is
+     * pi_tree_entry.rb_parent_color and word 7 is pi_tree_entry.rb_left. --- */
     {
         const memory::WriteRequest request = memory::WriteRequest::make(
             kTarget, memory::WriteMode::Zero, /*leaf=*/true);
@@ -83,7 +90,7 @@ int32_t main(void) {
             kernel::COMPACT_WAITER_5_10, request.target, 0, kFakeTask, kFakeLock,
             words, std::size(words));
         assert(count == 10);
-        assert(find_word(words, count, 5)->value == request.target - 8);
+        assert(find_word(words, count, 5)->value != request.target - 8);
         assert(find_word(words, count, 7)->value == 0);
     }
 

