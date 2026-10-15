@@ -93,5 +93,9 @@ namespace ghostlock::memory {
         current.destroy();
         prebuilt.destroy();
         quarantine.destroy();
+        for (size_t i = 0; i < held.size(); i++) {
+            held[i].destroy();
+        }
+        held_count = 0;
     }
 } // namespace ghostlock::memory

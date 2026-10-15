@@ -98,6 +98,15 @@ namespace ghostlock::memory {
         PayloadPage current;
         PayloadPage prebuilt;
         PayloadPage quarantine;
+        /* Pages retired during a run. A lost race leaves our crafted
+         * rt_mutex_waiter linked in a kernel PI tree, and the next walk reads
+         * that node's words. Closing the reclaim sockets hands the page back to
+         * the allocator: the stale node then reads back as zero, rb_red_parent()
+         * returns NULL and rb_insert_color() faults on gparent->rb_right (the
+         * 0x8 oops). Keeping every retired page -- not just the last one -- is
+         * what keeps those nodes readable for the whole run. */
+        std::array<PayloadPage, 24> held;
+        size_t held_count;
 
         void init();
     };

