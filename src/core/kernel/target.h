@@ -127,6 +127,10 @@ namespace ghostlock::kernel {
     inline constexpr std::size_t LEFT_OFF = target::payload::kLeftNodeOffset;
     inline constexpr std::size_t FAKE_TASK_OFF = target::payload::kFakeTaskOffset;
 
+    /* Black rb_node carpet: keeps a lost race from dereferencing a zero
+     * grandparent when the kernel walks a page-derived value as a tree node. */
+    inline constexpr std::size_t RELINK_NODE_OFF = target::payload::kRelinkNodeOffset;
+
     /* W2 payload. */
     inline constexpr std::size_t CRED_COPY_OFF = target::payload::kCredentialCopyOffset;
 

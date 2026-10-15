@@ -72,6 +72,23 @@ function Invoke-AdbTimed {
     return $text.Trim()
 }
 
+# v4.9: binary-safe timed pull. Grab-Forensics and Pull-BlackBox used
+# `Start-Process -Wait` with no timeout, so a wedged kernel (adbd still answers
+# `get-state`, but no process can run) hung the whole harness before it could
+# even write summary.txt - exactly what stopped the ov3 test round. Redirect
+# straight to a file so binary payloads stay intact, but bound the wait and
+# kill the stuck client. Partial content is kept: even a truncated kernel log
+# is evidence. Returns $false when the pull timed out.
+function Invoke-AdbToFile {
+    param([string[]]$AdbArgs, [string]$Dest, [int]$TimeoutSec = 25)
+    $err = "$Dest.err"
+    $p = Start-Process -FilePath $adb -ArgumentList $AdbArgs -RedirectStandardOutput $Dest -RedirectStandardError $err -NoNewWindow -PassThru
+    $ok = $p.WaitForExit($TimeoutSec * 1000)
+    if (-not $ok) { try { $p.Kill() } catch {}; return $false }
+    Remove-Item $err -ErrorAction SilentlyContinue
+    return $true
+}
+
 function Device-Uptime {
     return (Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "cat /proc/uptime") -TimeoutSec 15)
 }
@@ -94,7 +111,8 @@ function Grab-Forensics {
     # root:root 0600, unreadable by shell *and* by run-as). That directory also
     # carries kmsg-tail.bin - the continuous /dev/kmsg recorder that survives a
     # freeze or reset. Prefer it; keep files/ as a fallback for older builds.
-    $listing = (& $adb -s $Dev shell "ls /data/local/tmp/glkfx /data/local/tmp/glk-forensics" 2>$null) -join "`n"
+    $listing = Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "ls /data/local/tmp/glkfx /data/local/tmp/glk-forensics") -TimeoutSec 20
+    if ($listing -eq "__TIMEOUT__") { $listing = "" }
     foreach ($n in ($listing -split "`r?`n")) {
         $n = $n.Trim()
         if ($n -eq "" -or $n -match "No such file|Permission denied|^/data/local/tmp") { continue }
@@ -103,21 +121,22 @@ function Grab-Forensics {
         # recorder had more than 200 bytes - which is exactly the frozen-boot
         # kernel log (the whole point of the unlock).
         $destG = Join-Path $out "round-$Round.glk.$n"
-        Start-Process -FilePath $adb -ArgumentList @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glkfx/$n") -RedirectStandardOutput $destG -NoNewWindow -Wait
+        Invoke-AdbToFile -AdbArgs @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glkfx/$n") -Dest $destG | Out-Null
         $destL = Join-Path $out "round-$Round.legacy.$n"
-        Start-Process -FilePath $adb -ArgumentList @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glk-forensics/$n") -RedirectStandardOutput $destL -NoNewWindow -Wait
+        Invoke-AdbToFile -AdbArgs @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glk-forensics/$n") -Dest $destL | Out-Null
         foreach ($d in @($destG, $destL)) {
             $item = Get-Item $d -ErrorAction SilentlyContinue
             if ($null -eq $item -or $item.Length -lt 1) { Remove-Item $d -ErrorAction SilentlyContinue }
         }
         $grabbed += "glk/$n"
     }
-    $listing2 = (& $adb -s $Dev shell "run-as com.ghostlock.app ls files" 2>$null) -join "`n"
+    $listing2 = Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "run-as com.ghostlock.app ls files") -TimeoutSec 20
+    if ($listing2 -eq "__TIMEOUT__") { $listing2 = "" }
     foreach ($n in ($listing2 -split "`r?`n")) {
         $n = $n.Trim()
         if ($n -match '^(kmsg-head\.bin|param-.+|pstore-.+|\.ghostlock_root\.sh|\.ghostlock_run_state\.json)$') {
             $dest = Join-Path $out "round-$Round.forensics.$n"
-            Start-Process -FilePath $adb -ArgumentList @("-s", $Dev, "exec-out", "run-as", "com.ghostlock.app", "cat", "files/$n") -RedirectStandardOutput $dest -NoNewWindow -Wait
+            Invoke-AdbToFile -AdbArgs @("-s", $Dev, "exec-out", "run-as", "com.ghostlock.app", "cat", "files/$n") -Dest $dest | Out-Null
             $grabbed += "files/$n"
         }
     }
@@ -130,15 +149,15 @@ function Grab-Forensics {
 # before a watchdog reset survive on disk. Restarted every round (a reset kills
 # it) and pulled as round-N.bb.log for the spin-vs-deadlock analysis.
 function Start-BlackBox {
-    & $adb -s $Dev push (Join-Path (Get-Location) "build/glbb.sh") /data/local/tmp/glbb.sh > $null 2>&1
-    & $adb -s $Dev shell "chmod 755 /data/local/tmp/glbb.sh; rm -f /data/local/tmp/glbb.log; setsid sh /data/local/tmp/glbb.sh </dev/null >/dev/null 2>&1 &" > $null 2>&1
+    Invoke-AdbTimed -AdbArgs @("-s", $Dev, "push", (Join-Path (Get-Location) "build/glbb.sh"), "/data/local/tmp/glbb.sh") -TimeoutSec 30 | Out-Null
+    Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "chmod 755 /data/local/tmp/glbb.sh; rm -f /data/local/tmp/glbb.log; setsid sh /data/local/tmp/glbb.sh </dev/null >/dev/null 2>&1 &") -TimeoutSec 20 | Out-Null
     Start-Sleep -Seconds 1
 }
 
 function Pull-BlackBox {
     param([int]$Round)
     $dest = Join-Path $out "round-$Round.bb.log"
-    Start-Process -FilePath $adb -ArgumentList @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glbb.log") -RedirectStandardOutput $dest -NoNewWindow -Wait
+    Invoke-AdbToFile -AdbArgs @("-s", $Dev, "exec-out", "cat", "/data/local/tmp/glbb.log") -Dest $dest | Out-Null
 }
 
 # v4.2: the start button is located dynamically per round. The i-batch showed
@@ -150,9 +169,9 @@ function Pull-BlackBox {
 # Close any overlay (log sheet) with BACK, then re-foreground the activity so
 # the start button is actually exposed before the tap.
 function Reset-AppUi {
-    & $adb -s $Dev shell "input keyevent KEYCODE_BACK" > $null 2>&1
+    Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "input keyevent KEYCODE_BACK") -TimeoutSec 15 | Out-Null
     Start-Sleep -Seconds 1
-    & $adb -s $Dev shell "am start -n com.ghostlock.app/.ui.MainActivity" > $null 2>&1
+    Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "am start -n com.ghostlock.app/.ui.MainActivity") -TimeoutSec 20 | Out-Null
     Start-Sleep -Seconds 7
 }
 
@@ -196,6 +215,23 @@ function Get-StartButtonPoint {
     if ($y -gt 0) { return "540 $y" }
     if ($hintY -gt 0) { return "540 $hintY" }
     return $Fallback
+}
+
+# Host-side kernel log capture. `logcat -b kernel` is pumped by adbd over the
+# host's own transport, so it can still deliver the last kernel lines when a
+# miss wedges the device: on 2026-10-14 14:44 the frozen device answered
+# `adb get-state` but timed out on both `adb shell` and `adb pull`, i.e. the
+# on-device recorder (f2fs under /data/local/tmp) was unreadable. Start this
+# before the round loop; it is stopped after the loop.
+$kernelLog = Join-Path $out "kernel.log"
+$kernelCapture = $null
+try {
+    $adbExe = (Get-Command $adb -ErrorAction SilentlyContinue).Source
+    if ([string]::IsNullOrWhiteSpace($adbExe)) { $adbExe = $adb }
+    $kernelCapture = Start-Process -FilePath $adbExe -ArgumentList @('-s', $Dev, 'logcat', '-b', 'kernel', '-v', 'time') -RedirectStandardOutput $kernelLog -NoNewWindow -PassThru
+    Write-Output "=== kernel log capture -> $kernelLog (pid $($kernelCapture.Id)) ==="
+} catch {
+    Write-Output "=== kernel log capture failed to start: $_ ==="
 }
 
 for ($r = 1; $r -le $Rounds; $r++) {
@@ -244,6 +280,25 @@ for ($r = 1; $r -le $Rounds; $r++) {
         if ($log -match "child seccomp fully bypassed")  { $verdict = "W3-OK" }
     }
 
+    $missed = $false
+    if (-not $verdict) {
+        # No terminal verdict inside the poll window. Two very different cases:
+        #  - the tap missed and native never started: the log is empty
+        #  - the run was attempted and the pselect never returned: the log ends
+        #    at "consumer gate: waiter parked in syscall 72" (baseline round 7,
+        #    2026-10-14). That is a MISS, and it leaves a kernel task stuck on
+        #    the PI lock: the device stays reachable (round 7's up_after was
+        #    readable), but the NEXT run deadlocks the kernel - round 8 of that
+        #    same batch froze the device. Reboot before the next round instead
+        #    of letting the poison accumulate into a freeze.
+        if ($log -match "consumer gate: waiter parked in syscall" -and $log -notmatch "pselect route done") {
+            $verdict = "MISS"
+            $missed = $true
+        } else {
+            $verdict = "TIMEOUT"
+        }
+    }
+
     if ($verdict -eq "HIT-ROOT") {
         # Native exit tail (incl. fork-hold parked) lands only after native
         # exits; poll for the line instead of a fixed 12s wait. (v4.1: the
@@ -254,7 +309,10 @@ for ($r = 1; $r -le $Rounds; $r++) {
             $log = Read-NativeLog
             if ($log -match "fork-hold parked") { break }
         }
-        & $adb -s $Dev shell "ps -A -o pid,ppid,user,stime,comm" | Out-File -FilePath (Join-Path $out "round-$r.ps.log") -Encoding utf8
+        # v4.9: timed - this dump runs in the post-HIT window, which is exactly
+        # where a trailing miss wedges the kernel (a plain `& adb` hung here).
+        $psOut = Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "ps -A -o pid,ppid,user,stime,comm") -TimeoutSec 20
+        if ($psOut -ne "__TIMEOUT__") { $psOut | Out-File -FilePath (Join-Path $out "round-$r.ps.log") -Encoding utf8 }
         # v4.3: copy the rooted child's forensics out of files/ before the next
         # round wipes them (j-batch lost all three HIT payloads this way).
         Grab-Forensics -Round $r
@@ -282,6 +340,19 @@ for ($r = 1; $r -le $Rounds; $r++) {
             Start-Sleep -Seconds 3
             $log = Read-NativeLog
         }
+    }
+    if ($missed) {
+        # A miss leaves a task stuck on the kernel's PI lock. The device is
+        # still reachable right after it (that is why this reboot works while
+        # the FREEZE one often cannot), so clear the boot here: running another
+        # round on top of the stuck task is what produced the freeze.
+        Invoke-AdbTimed -AdbArgs @("-s", $Dev, "reboot") -TimeoutSec 20 | Out-Null
+        for ($w = 0; $w -lt 60; $w++) {
+            Start-Sleep -Seconds 5
+            $u = Device-Uptime
+            if ($u -ne "__TIMEOUT__" -and $u -match "^\s*[0-9]+\.\d+") { break }
+        }
+        if (Wait-Device) { Start-Sleep -Seconds 3 }
     }
     if (-not $verdict) { $verdict = "TIMEOUT" }
     Pull-BlackBox -Round $r
@@ -368,3 +439,8 @@ for ($r = 1; $r -le $Rounds; $r++) {
 }
 
 "=== done ===" | Add-Content $summary
+
+if ($kernelCapture -and -not $kernelCapture.HasExited) {
+    try { $kernelCapture.Kill() } catch { }
+}
+Write-Output "=== kernel log capture stopped ($kernelLog) ==="

@@ -214,8 +214,8 @@ namespace ghostlock::session::victim {
      * entry (ramoops never registers on this device), so the kernel's own
      * account of the wedge exists only in the printk ring of the boot that
      * dies. This detached fork keeps draining /dev/kmsg into a world-readable
-     * file and fsyncs it once a second, so the record outlives the abrupt
-     * reboot and can be pulled afterwards. */
+     * file and fsyncs every batch it writes, so the record survives both the
+     * wedge and the power cycle that follows it. */
     static void start_kmsg_tailer(const char *dir) {
         const pid_t tail = fork();
         if (tail < 0) {
@@ -237,7 +237,17 @@ namespace ghostlock::session::victim {
             nofile_limit.rlim_cur <= static_cast<rlim_t>(1048576)) {
             fd_limit = static_cast<int32_t>(nofile_limit.rlim_cur);
         }
-        for (int32_t fd = 3; fd < fd_limit; fd++) close(fd);
+#if defined(__NR_close_range)
+        /* One syscall instead of up to a million: the sweep runs before the
+         * header is written, and the loop measurably delayed the first durable
+         * byte on a loaded device. */
+        const bool swept = syscall(__NR_close_range, 3U, ~0U, 0U) == 0;
+#else
+        const bool swept = false;
+#endif
+        if (!swept) {
+            for (int32_t fd = 3; fd < fd_limit; fd++) close(fd);
+        }
         std::array < char, 512 > path{};
         snprintf(path.data(), path.size(), "%s/kmsg-tail.bin", dir);
         support::UniqueFd in(open("/dev/kmsg", O_RDONLY | O_CLOEXEC));
@@ -253,8 +263,14 @@ namespace ghostlock::session::victim {
             (void) nw;
             fsync(out.get());
         }
+        /* lmkd must not reap the recorder: a killed recorder is exactly the case
+         * that left the previous freeze with a header and nothing after it. */
+        support::UniqueFd oom(open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC));
+        if (oom.valid()) {
+            const ssize_t nw = write(oom.get(), "-1000", 5);
+            (void) nw;
+        }
         std::array < char, 8192 > rec{};
-        time_t last_sync = time(nullptr);
         for (;;) {
             const ssize_t nr = read(in.get(), rec.data(), rec.size());
             if (nr > 0) {
@@ -265,14 +281,16 @@ namespace ghostlock::session::victim {
                     if (nw <= 0) break;
                     off += nw;
                 }
-            } else if (nr < 0 && errno != EAGAIN && errno != EINTR) {
-                fsync(out.get()); /* device node gone: the machine is going down */
-                _exit(1);
-            }
-            const time_t now = time(nullptr);
-            if (now != last_sync) {
+                /* Every batch, not every second. The wedge this recorder exists
+                 * to explain takes the machine down inside that window, and the
+                 * power cycle that follows discards whatever is still dirty. */
                 fsync(out.get());
-                last_sync = now;
+            } else if (nr < 0 && errno != EAGAIN && errno != EINTR) {
+                /* Never give up on the first bad read: the oops text this
+                 * recorder is chasing is printed at the instant the wedge
+                 * begins, and /dev/kmsg usually stays readable through it. */
+                fsync(out.get());
+                usleep(1000);
             }
         }
     }
@@ -385,6 +403,28 @@ namespace ghostlock::session::victim {
         closedir(dir);
         if (dumped == 0) pr_info("pstore dump: no entries (dir empty)\n");
         arm_pstore_calibration_probe(files_dir.data());
+    }
+
+    /* The handoff's own witness. stdio is block-buffered and both execve() and
+     * _exit() throw away whatever is still buffered, so a worker that dies
+     * between the fork and the script's first line leaves nothing behind --
+     * which is exactly how the root script's silent non-start stayed invisible.
+     * Raw syscalls plus fsync, so the stage it reached survives whatever the
+     * worker does next. */
+    static void handoff_breadcrumb(const char *home, const char *stage, int32_t value) {
+        std::array < char, 352 > path{};
+        snprintf(path.data(), path.size(), "%s/.ghostlock_handoff_probe", home);
+        support::UniqueFd out(open(path.data(), O_WRONLY | O_CREAT | O_APPEND, 0644));
+        if (!out.valid()) return;
+        (void) fchmod(out.get(), 0644);
+        std::array < char, 160 > line{};
+        const int32_t n = snprintf(line.data(), line.size(), "%s value=%d errno=%d\n",
+                                   stage, value, errno);
+        if (n > 0) {
+            const ssize_t written = write(out.get(), line.data(), static_cast<size_t>(n));
+            (void) written;
+        }
+        (void) fsync(out.get());
     }
 
     static void child_main(VictimContext &p) {
@@ -512,6 +552,8 @@ namespace ghostlock::session::victim {
         std::array < char, 320 > script_path{};
         snprintf(script_path.data(), script_path.size(), "%s",
                  config::runtime_config_snapshot().root_script_path.c_str());
+        handoff_breadcrumb(config::runtime_config_snapshot().home_dir.c_str(),
+                           "handoff-pre-fork", static_cast<int32_t>(getuid()));
         pid_t worker = fork();
         if (worker == 0) {
             /* Detach into a brand-new session: the independent root shell owns the
@@ -522,10 +564,47 @@ namespace ghostlock::session::victim {
             support::UniqueFd probe(open(script_path.data(), O_RDONLY | O_CLOEXEC));
             pr_info("handoff: script open fd=%d errno=%d path=%s\n", probe.get(), errno,
                     script_path.data());
-            execl("/system/bin/sh", "sh", script_path.data(),
+            handoff_breadcrumb(config::runtime_config_snapshot().home_dir.c_str(),
+                               "worker-enter", static_cast<int32_t>(getuid()));
+            /* mksh says nothing and exits 0 when the script it was handed looks
+             * empty, and a script it never managed to read looks exactly the
+             * same from the outside. Record what this process can actually see,
+             * and prove that a shell can run a command at all here, before the
+             * handoff is allowed to depend on one. */
+            const char *handoff_home = config::runtime_config_snapshot().home_dir.c_str();
+            const off_t script_size = lseek(probe.get(), 0, SEEK_END);
+            (void) lseek(probe.get(), 0, SEEK_SET);
+            handoff_breadcrumb(handoff_home, "worker-script-size",
+                               static_cast<int32_t>(script_size));
+            std::array < char, 32 > script_head{};
+            const ssize_t script_bytes = read(probe.get(), script_head.data(), script_head.size());
+            handoff_breadcrumb(handoff_home, "worker-script-read",
+                               static_cast<int32_t>(script_bytes));
+            std::array < char, 384 > sh_probe{};
+            snprintf(sh_probe.data(), sh_probe.size(),
+                     "echo alive uid=$(id -u) >'%s/.ghostlock_sh_probe' 2>&1",
+                     handoff_home);
+            const pid_t sh_test = fork();
+            if (sh_test == 0) {
+                execl("/system/bin/sh", "sh", "-c", sh_probe.data(),
+                      static_cast<char *>(nullptr));
+                _exit(127);
+            }
+            if (sh_test > 0) {
+                int32_t sh_status = -1;
+                (void) waitpid(sh_test, &sh_status, 0);
+                handoff_breadcrumb(handoff_home, "worker-sh-rc", sh_status);
+            }
+            /* -x: when the shell dies before the script's first line can create
+             * its log, the trace it writes to stderr is the only account of how
+             * far it got. */
+            execl("/system/bin/sh", "sh", "-x", script_path.data(),
                   static_cast<char *>(nullptr));
+            const int32_t exec_errno = errno;
+            handoff_breadcrumb(config::runtime_config_snapshot().home_dir.c_str(),
+                               "worker-exec-failed", exec_errno);
             pr_warning("execl root script failed path=%s errno=%d\n",
-                       script_path.data(), errno);
+                       script_path.data(), exec_errno);
             _exit(1);
         }
         pr_info("handoff: root shell worker pid=%d\n", worker);

