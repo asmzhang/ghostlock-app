@@ -72,6 +72,16 @@ namespace ghostlock::support {
     uintptr_t prepare_kernel_page(const ghostlock::memory::WriteRequest *request);
 
     uintptr_t prepare_good_kernel_page(const ghostlock::memory::WriteRequest &request);
+
+    /* Spray the W3-0 leaf-direction page in the W2-safe window and park it in
+     * the prebuilt slot (see prepare_kernel_page's PREP-DEATH note). */
+    Status prepare_prebuilt_leaf_page(uintptr_t target);
+
+    /* W3-0 fast path: match the request against the stashed leaf page, retire
+     * the fired page into the hold and move the prebuilt page into current.
+     * False leaves the stash intact only when it was absent or mismatched;
+     * after a successful park the stash is consumed. */
+    Status consume_prebuilt_leaf_page(const ghostlock::memory::WriteRequest &request);
 } // namespace ghostlock::support
 
 #endif

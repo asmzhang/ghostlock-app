@@ -18,6 +18,19 @@ namespace ghostlock::support {
         return host::script().page_base;
     }
 
+    Status prepare_prebuilt_leaf_page(const uintptr_t target) {
+        /* The host script records the prebuilt spray; the consume side stays
+         * disabled so the dataflow test exercises the regular spray path. */
+        host::script().record("prebuilt");
+        (void) target;
+        return true;
+    }
+
+    Status consume_prebuilt_leaf_page(const ghostlock::memory::WriteRequest &request) {
+        (void) request;
+        return false;
+    }
+
     void discard_prebuilt_page(void) {}
 
     int32_t quarantine_reclaim_sockets(void) { return 1; }

