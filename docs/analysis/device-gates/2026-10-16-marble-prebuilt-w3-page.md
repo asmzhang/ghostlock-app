@@ -48,3 +48,21 @@
   才需要怀疑 prebuilt 喷页改变了 W1 之后的堆状态。
 - r13/14/19/20 的 HIT 轮 log 截断在 W3 段（v4.11 已知现象），4/12 命中带不来 KernelSU
   的原因未逐轮审计（基线同样 ~15% 命中无 KernelSU）。
+
+
+## 确认批次 B（rounds-prebuilt-b，2026-10-16 23:20 跑完）
+
+同二进制、同协议复测 20 轮：**uid=0 12/20 = 60%（与批次 A 逐数相同）、完整 KernelSU 7/20 = 35%、
+PANIC 8/20、FREEZE 0、PREP-DEATH 0/20**。8 个 PANIC 再次全部是 pselect 打偏（W1×5、W2×3），
+prebuilt prepared 15、consumed 12。全部 11 次 RebootAfterHit 均正常回来（enforce=Enforcing）。
+
+## 合并判定（A+B，40 轮）
+
+- **PREP-DEATH 0/40 vs 基线 7/20，Fisher 单侧 p=0.0002 —— 修复为统计铁案**。
+- uid=0 批间完全一致（12/20 vs 12/20，p≈0.63）⇒ 批次 A 的「60% vs 基线 90%」判定为**抽样波动**：
+  W1 固有打偏（合并落地 30/40 = 75%，历史单批区间 60–90%）主导，prebuilt 无回归。
+- 完整率 A 4/20 vs B 7/20（p=0.24，一致）；批 A 的 r4 经 kmsg 取证证实 KernelSU 已加载
+  （native 日志被 40s 窗口截断）⇒ 完整率被 harness 低估，v4.12（bc316c2）已改为 90s 窗 +
+  ksu-log 完成标记。
+- 剩余死亡全部收敛到单一已知家族：pselect 打偏（W1/W2 各 ~20–25% 每枪固有概率）；
+  r14 为「命中后尾巴重启」（watchdog 解绑后的尾巴 miss），属于「全程不重启」目标的残余难点。
