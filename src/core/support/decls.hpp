@@ -56,6 +56,13 @@ namespace ghostlock::support {
 
     void cleanup_page_prepare_state(void);
 
+    /* One fsync-per-line breadcrumb into <home>/.ghostlock_spray_probe. The
+     * stage names match the pr_info markers already in prepare_kernel_page,
+     * so the file's last line names the exact sub-step a wedged kernel died
+     * in -- the spray otherwise leaves no trace (oops in the wrong thread
+     * with panic_on_oops=0 leaves nothing in the native log either). */
+    void spray_breadcrumb(const char *stage);
+
     int32_t clone_memfd(void);
 
     void prepare_ctxs(void);

@@ -221,14 +221,13 @@ pub fn build(input: Input<'_>) -> Analysis {
         mm_struct_size = btf.size("mm_struct");
     }
 
-    let pselect = match (input.allow_disasm, input.btf) {
-        (false, _) => PselectOutcome::NotAttempted("--no-disasm"),
-        (true, None) => PselectOutcome::NotAttempted("no embedded BTF"),
-        (true, Some(btf)) => match derive_pselect_layout(
+    let pselect = match input.allow_disasm {
+        false => PselectOutcome::NotAttempted("--no-disasm"),
+        true => match derive_pselect_layout(
             input.kernel,
             input.rel_symbols,
             input.sorted_offsets,
-            btf,
+            input.btf,
             PSELECT_ROUTE_NFDS,
         ) {
             Ok(layout) => PselectOutcome::Derived(Box::new(layout)),

@@ -442,12 +442,12 @@ fn run(cli: &Cli) -> Result<i32> {
     // recorded here and re-checked after route selection instead of aborting.
     let mut pselect_infeasible: Option<String> = None;
     if !cli.no_disasm {
-        if let Some(btf) = &btf {
+        {
             match derive_pselect_layout(
                 &boot.kernel,
                 &rel_symbols,
                 &sorted_offsets,
-                btf,
+                btf.as_ref(),
                 PSELECT_ROUTE_NFDS,
             ) {
                 Ok(layout) => {
@@ -486,6 +486,8 @@ fn run(cli: &Cli) -> Result<i32> {
                     eprintln!("warning: pselect_waiter_shift derivation failed: {err}");
                 }
             }
+        }
+        if let Some(btf) = &btf {
             match derive_nf_logger_registration(&boot.kernel, &rel_symbols, &sorted_offsets, btf) {
                 Ok(info) => {
                     derived.insert("off_slide_loggers_0_1".to_string(), info.loggers_0_1);

