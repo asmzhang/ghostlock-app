@@ -409,7 +409,35 @@ for ($r = 1; $r -le $Rounds; $r++) {
         # and a bare `adb reboot` fails with "more than one device/emulator",
         # which used to make this path report a failed recovery without ever
         # rebooting.
-        (Invoke-AdbTimed -AdbArgs @('-s', $Dev, 'reboot') -TimeoutSec 20) | Out-Null
+        #
+        # v4.9: `adb reboot` runs init's orderly shutdown, which terminates every
+        # process -- including the fork-hold child P0-1 parks to keep the reclaim
+        # sockets alive. Releasing those sockets runs
+        # unix_release_sock -> put_page on a page carved out of the kernel image
+        # that never had its refcount raised ("BUG: Bad page state"), and the
+        # root script has already turned panic_on_oops off, so that oops lands
+        # mid-shutdown and wedges the kernel instead of resetting it: the device
+        # sits in `adb offline` until it is power-cycled by hand (2026-10-15, the
+        # rounds-w3fix batch, round 2 hit then never came back).
+        #
+        # `reboot -f` jumps straight to the kernel restart, so no process exits
+        # and nothing is released. After a HIT-ROOT KernelSU su is up, which is
+        # exactly when this path runs; the poll below falls back to `adb reboot`
+        # if su is missing or the forced reset does not take.
+        $down = $false
+        $suReboot = Invoke-AdbTimed -AdbArgs @('-s', $Dev, 'shell', 'su', '-c', '"reboot -f"') -TimeoutSec 25
+        if ($suReboot -eq "__TIMEOUT__") { $down = $true }
+        if (-not $down) {
+            for ($d = 0; $d -lt 8; $d++) {
+                Start-Sleep -Seconds 2
+                $u = Invoke-AdbTimed -AdbArgs @('-s', $Dev, 'shell', 'cat /proc/uptime') -TimeoutSec 5
+                if ($u -eq "__TIMEOUT__" -or $u -notmatch "^\s*([0-9]+(?:\.[0-9]+)?)") { $down = $true; break }
+            }
+        }
+        if (-not $down) {
+            "=== forced reboot did not take; falling back to adb reboot ===" | Add-Content $summary
+            (Invoke-AdbTimed -AdbArgs @('-s', $Dev, 'reboot') -TimeoutSec 20) | Out-Null
+        }
         $prevUp = 1e9
         if ($upBefore -match "^\s*([0-9]+(?:\.[0-9]+)?)") { $prevUp = [double]$Matches[1] }
         $back = $false
