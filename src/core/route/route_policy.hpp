@@ -274,6 +274,23 @@ namespace ghostlock::route {
             return std::decay_t<decltype(policy)>::multicast;
         });
     }
+
+    /* select_stack parks its crafted rt_mutex_waiter in the waiter thread's own
+     * stack frame and leaves task->pi_blocked_on aimed at it, exactly like the
+     * multicast primitive; it simply never grew the matching disarm step. The
+     * measured consequence is the same one the multicast comment warns about:
+     * when the thread exits, the next PI walk (the following write stage's
+     * consumer sched_setattr) follows that pointer into a stack frame the
+     * scheduler has already reused or zeroed, so rb_insert_color reads a zeroed
+     * parent, faults at offset 0x8 and oopses with preempt_count held -- which
+     * wedges the CPU instead of rebooting. Disarm while the frame is alive. */
+    [[nodiscard]] inline bool route_needs_stack_disarm(
+        const profile::TargetProfile &profile) noexcept {
+        return route_capability(profile, [](auto policy) {
+            return std::decay_t<decltype(policy)>::kind ==
+                   profile::RouteKind::SelectStack;
+        });
+    }
 } // namespace ghostlock::route
 
 #endif

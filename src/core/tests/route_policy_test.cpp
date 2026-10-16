@@ -99,6 +99,11 @@ int32_t main(void) {
     /* Capability projection follows the resolved policy. */
     assert(!route_needs_ghost_disarm(select_profile) && !route_needs_ghost_disarm(tcp_profile) &&
            route_needs_ghost_disarm(mcast_profile));
+    /* select_stack parks its waiter in the thread's own stack frame, so it
+     * needs the same post-race disarm even though it is not multicast. */
+    assert(route_needs_stack_disarm(select_profile) &&
+           !route_needs_stack_disarm(tcp_profile) &&
+           !route_needs_stack_disarm(mcast_profile));
     assert(!route_capability(select_profile,
                              [](auto policy) {
                                  return std::decay_t<decltype(policy)>::tcp_payload_layout;
