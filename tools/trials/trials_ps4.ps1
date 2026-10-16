@@ -352,10 +352,25 @@ for ($r = 1; $r -le $Rounds; $r++) {
         # exits; poll for the line instead of a fixed 12s wait. (v4.1: the
         # c-batch lost it — native was still alive 12s after HIT, and the
         # next round's rm -f deleted the tail.)
-        for ($h = 0; $h -lt 20; $h++) {
+        # v4.12: the 40s window truncated the W3+handoff long tail —
+        # rounds-prebuilt r4's log ended at "handoff: script open fd=320"
+        # while the 239MB kmsg tail proved KernelSU had loaded (ksud
+        # tp_marker: unmark lines). The root script's own log is the honest
+        # completion marker: wait for it (or the native tail) up to 90s, and
+        # snapshot the ksu log whether or not the native tail arrives.
+        $ksuLogGrabbed = $false
+        for ($h = 0; $h -lt 45; $h++) {
             Start-Sleep -Seconds 2
             $log = Read-NativeLog
             if ($log -match "fork-hold parked") { break }
+            if (-not $ksuLogGrabbed) {
+                $ksuProbe = Invoke-AdbTimed -AdbArgs @("-s", $Dev, "shell", "run-as com.ghostlock.app sh -c 'ls -t files/ghostlock-ksu-*.log 2>/dev/null | head -1'") -TimeoutSec 15
+                if ($ksuProbe -ne "__TIMEOUT__" -and $ksuProbe -match "ghostlock-ksu-\d+\.log") {
+                    $ksuName = $Matches[0]
+                    Invoke-AdbToFile -AdbArgs @("-s", $Dev, "exec-out", "run-as", "com.ghostlock.app", "cat", "files/$ksuName") -Dest (Join-Path $out "round-$r.ksu.log") | Out-Null
+                    $ksuLogGrabbed = $true
+                }
+            }
         }
         # v4.9: timed - this dump runs in the post-HIT window, which is exactly
         # where a trailing miss wedges the kernel (a plain `& adb` hung here).
@@ -433,7 +448,10 @@ for ($r = 1; $r -le $Rounds; $r++) {
     $sawW3 = if ($clean -match "child seccomp fully bypassed") { "W3=ok" }
              elseif ($clean -match "W3-0: leaf dir") { "W3=entered" }
              else { "W3=no" }
-    $hold = if ($clean -match "fork-hold parked pid=(\d+)") { "ok(pid=$($Matches[1]))" } else { "no" }
+    $hold = if ($clean -match "fork-hold parked pid=(\d+)") { "ok(pid=$($Matches[1]))" }
+            elseif ((Test-Path (Join-Path $out "round-$r.ksu.log")) -and
+                    ((Get-Content (Join-Path $out "round-$r.ksu.log") -Raw -ErrorAction SilentlyContinue) -match "KernelSU module loaded")) { "ok(ksu-log)" }
+            else { "no" }
     $upAfter = ""
     if (Test-Dev) { $upAfter = Device-Uptime }
     $rec = "round $r : $verdict | $sawW1 $reachedW2 $sawW3 hold=$hold | gate=$gate | park='$reserved' | up_before=$upBefore | up_after=$upAfter | $stamp"
