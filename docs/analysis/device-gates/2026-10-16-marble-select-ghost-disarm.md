@@ -91,6 +91,31 @@ select_stack 用的是同一种"栈上 waiter"原语，却只按 `route_needs_gh
 disarm 本身不改：`dummy_pi = 0x80000000 | getpid()` + 过期 timeout 的 `FUTEX_LOCK_PI`
 会强制当前线程走 PI 慢路径，从而在栈帧还活着的时候消费掉自己的 `pi_blocked_on` 幽灵。
 
+### 悬空节点是怎么进入"真实"任务的 PI 树的
+
+`rb_insert_color` 只可能由 `rt_mutex_enqueue_pi(task, waiter)` 走到
+（`build/510profile/src/rtmutex-v5.10.149.c:304-323`，被内联进
+`rt_mutex_adjust_prio_chain`，与栈回溯一致）：
+
+```c
+rb_link_node(&waiter->pi_tree_entry, parent, link);
+rb_insert_color_cached(&waiter->pi_tree_entry, &task->pi_waiters, leftmost);
+```
+
+`parent` 来自沿 `task->pi_waiters` 的下降；如果树里已经有一个**指向已释放内存的陈旧指针**，
+`rb_link_node` 就把 node 的 `__rb_parent_color` 设成那个陈旧指针（偶地址 ⇒ "红色"），
+`rb_insert_color` 再取 `gparent = *(parent) & ~3` —— 内存已清零 ⇒ `gparent = 0`
+⇒ 在 `gparent->rb_right`（0x8）上炸。这与 oops 的故障地址逐位吻合。
+
+**那么陈旧指针怎么进真实任务的树**：打偏时（fd_set 的拷贝没有落在
+`pi_blocked_on` 指向的槽位上）`waiter->lock` 读到的是真实 `rt_mutex`，于是
+`lock->owner` 是**真实 task**，`rt_mutex_adjust_prio_chain` 就把我们的**栈上** waiter
+`rt_mutex_enqueue_pi()` 进了那个真实任务的 `pi_waiters`。线程一退出、栈一回收，
+真实任务的树里就永久留下一个指向空内存的节点 —— 直到 disarm 把它摘掉。
+
+这正是"打偏本身只丢一次写，但下一次 PI walk 必定踩空"的完整链条，
+也说明修复必须发生在**线程退出之前**。
+
 ## 与既有 gate 的关系
 
 - `docs/analysis/device-gates/2026-10-15-marble-w3-leaf-freeze.md`：同一个 `rb_insert_color`
