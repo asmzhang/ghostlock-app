@@ -283,7 +283,7 @@ for ($r = 1; $r -le $Rounds; $r++) {
     # process re-created the log: see the $verdictLog snapshot below.
     & $adb -s $Dev shell "am force-stop com.ghostlock.app" > $null 2>&1
     Start-Sleep -Milliseconds 800
-    & $adb -s $Dev shell "run-as com.ghostlock.app sh -c 'rm -f files/.ghostlock_native.log files/.ghostlock_run_state.json'" > $null 2>&1
+    & $adb -s $Dev shell "run-as com.ghostlock.app sh -c 'rm -f files/.ghostlock_native.log files/.ghostlock_run_state.json files/ghostlock-ksu-*.log files/.ghostlock_sh_probe'" > $null 2>&1
     $logState = ((& $adb -s $Dev shell "run-as com.ghostlock.app sh -c 'test -f files/.ghostlock_native.log && echo present || echo absent'" 2>$null) -join "").Trim()
     if ($logState -ne "absent") {
         "round $r : WARN stale native log not cleared (state=$logState); verdict may not be this round's" | Add-Content $summary
