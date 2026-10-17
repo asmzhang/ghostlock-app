@@ -83,7 +83,10 @@ namespace ghostlock::session::frontend {
         const int32_t kernelsu_ready = handoff_result.ready() ? 1 : 0;
 
         /* Fixup: permissive, load_policy, late-load. Module init re-enforces;
-         * policy reload keeps it working after enforcing is back. */
+         * policy reload keeps it working after enforcing is back. The probe
+         * accepts either root manager (kernelsu or kernelpatch); the message
+         * keeps the historical wording because both routes print the same
+         * 'KernelSU ready' contract to the app log parser. */
         if (kernelsu_ready)
             pr_success("KernelSU ready\n");
         else if (handoff_result.ksu_log_failed)

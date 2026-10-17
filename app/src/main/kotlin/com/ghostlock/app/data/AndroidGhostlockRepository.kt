@@ -579,6 +579,8 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
             val binary = File(appContext.applicationInfo.nativeLibraryDir, binaryName)
             require(binary.isFile) { "missing native binary: ${binary.absolutePath}" }
             if (prepareKsud(workDir, onLog) != null) onLog("<k> ksud ready") else onLog("<k> warning: ksud not found")
+            if (prepareApd(workDir, onLog) != null) onLog("<k> libapd.so ready") else onLog("<k> warning: libapd.so not found")
+            if (prepareKpatch(workDir, onLog) != null) onLog("<k> kernelpatch.ko ready") else onLog("<k> warning: kernelpatch.ko not found")
             // U01-S14: a per-run KernelSU log path so a previous run's markers
             // can never satisfy the handoff probe; passed to the native process.
             val ksuLog = File(workDir, ksuLogName(System.currentTimeMillis()))
@@ -1032,6 +1034,51 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
         }
         if (!installed) onLog("<k> KernelSU/ReSukiSU/KowSU app not installed")
         return null
+    }
+
+    /* Stage the APatch daemon (libapd.so) next to ksud so the root script can
+     * load kernelpatch.ko through apd's kallsyms-relocation insmod. The
+     * manager ships its own copy; execing it from the manager's lib dir would
+     * work too, but a stable work-dir copy keeps the script's probe order
+     * identical to the proven my2 layout (work-dir first, then /data/app). */
+    private fun prepareApd(workDir: File, onLog: (String) -> Unit): File? {
+        val appInfo = runCatching { appContext.packageManager.getApplicationInfo("me.bmax.apatch", 0) }.getOrNull()
+        if (appInfo == null) {
+            onLog("<k> APatch app not installed")
+            return null
+        }
+        val source = File(appInfo.nativeLibraryDir, "libapd.so")
+        if (!source.isFile) {
+            onLog("<k> APatch app has no libapd.so")
+            return null
+        }
+        val output = File(workDir, "libapd.so")
+        return runCatching {
+            source.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
+            runCatching { Os.chmod(output.absolutePath, 448) }
+            output
+        }.onFailure { onLog("<k> copy libapd.so failed: ${it.message}") }.getOrNull()
+    }
+
+    /* Stage the KernelPatch module for this device's KMI. The 5.10.149 GKI
+     * does not export 13 of the symbols kernelpatch.ko references, so the
+     * module can only be loaded through apd's userspace kallsyms relocation
+     * (never a plain insmod); apd insmod also leaves the SELinux policy
+     * untouched, unlike apd late-load. */
+    private fun prepareKpatch(workDir: File, onLog: (String) -> Unit): File? {
+        val release = System.getProperty("os.version", "").orEmpty()
+        val assetName = "kernelpatch/android12-5.10_kernelpatch.ko"
+        /* marble's os.version is '5.10.149-android12-9-...' — the 5.10 comes
+         * first, so only the bare '5.10.' substring is guaranteed. */
+        if (!release.contains("android12") || !release.contains("5.10.")) {
+            onLog("<k> kernelpatch.ko: release $release is not android12-5.10; skipping")
+            return null
+        }
+        val output = File(workDir, "kernelpatch.ko")
+        return runCatching {
+            appContext.assets.open(assetName).use { input -> output.outputStream().use { input.copyTo(it) } }
+            output
+        }.onFailure { onLog("<k> copy kernelpatch.ko failed: ${it.message}") }.getOrNull()
     }
 
     private suspend fun runProcess(

@@ -59,7 +59,12 @@ namespace ghostlock::session {
         bool loaded = false;
         for_each_line("/proc/modules", [&loaded](std::string_view line) {
             const size_t end = line.find_first_of(" \t");
-            if (line.substr(0, end) == "kernelsu") loaded = true;
+            /* Both root managers count: KernelSU's kernelsu.ko and APatch's
+             * kernelpatch.ko (loaded through apd insmod). The APatch line is
+             * 'kernelpatch 126976 0 - Live ... (O)'. */
+            if (line.substr(0, end) == "kernelsu" || line.substr(0, end) == "kernelpatch") {
+                loaded = true;
+            }
         });
         return loaded;
     }
@@ -83,11 +88,15 @@ namespace ghostlock::session {
         snprintf(resolved.data(), resolved.size(), "%.*s", static_cast<int32_t>(path.size()),
                  path.data());
         const bool opened = for_each_line(resolved.data(), [&](std::string_view line) {
+            /* The success marker is emitted for both routes: the script prints
+             * 'KernelSU module loaded' after the watch loop passes on either
+             * kernelsu.ko or kernelpatch.ko. */
             if (line.contains("[+] KernelSU module loaded") ||
                 line.contains("[+] KernelSU already loaded")) {
                 loaded = true;
             }
-            if (line.contains("[!] KernelSU module not loaded")) {
+            if (line.contains("[!] KernelSU module not loaded") ||
+                line.contains("[!] KernelSU/KernelPatch module not loaded")) {
                 failed = true;
             }
         });
