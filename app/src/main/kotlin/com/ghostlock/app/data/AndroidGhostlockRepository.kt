@@ -1067,12 +1067,17 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
      * untouched, unlike apd late-load. */
     private fun prepareKpatch(workDir: File, onLog: (String) -> Unit): File? {
         val release = System.getProperty("os.version", "").orEmpty()
-        val assetName = "kernelpatch/android12-5.10_kernelpatch.ko"
-        /* marble's os.version is '5.10.149-android12-9-...' — the 5.10 comes
-         * first, so only the bare '5.10.' substring is guaranteed. */
-        if (!release.contains("android12") || !release.contains("5.10.")) {
-            onLog("<k> kernelpatch.ko: release $release is not android12-5.10; skipping")
-            return null
+        /* KMI selects the module binary: android12-5.10 (marble) vs
+         * android13-5.10 (Pixel 6 oriole) are separate KernelPatch builds. */
+        val assetName = when {
+            release.contains("android12") && release.contains("5.10.") ->
+                "kernelpatch/android12-5.10_kernelpatch.ko"
+            release.contains("android13") && release.contains("5.10.") ->
+                "kernelpatch/android13-5.10_kernelpatch.ko"
+            else -> {
+                onLog("<k> kernelpatch.ko: release $release has no matching KMI asset; skipping")
+                return null
+            }
         }
         val output = File(workDir, "kernelpatch.ko")
         return runCatching {

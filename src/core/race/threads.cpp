@@ -1,5 +1,5 @@
 /*
- * GhostLock — PI race worker threads and the per-write route entry.
+ * GhostLock 鈥?PI race worker threads and the per-write route entry.
  *
  * Split out of main.cpp; the statement order and log text are unchanged.
  */
@@ -328,6 +328,7 @@ namespace ghostlock::race {
     /* Create, synchronize, stop and join one explicitly owned PI race. */
     Status run_main_route_threads(const memory::WriteRequest &request) {
         reset_main_route_state();
+        support::spray_breadcrumb("route enter");
         pr_info("[route] creating waiter/owner/consumer\n");
         int32_t error = session::g_exploit_session.race.start_threads(
             waiter_thread, owner_thread, consumer_thread, &request);

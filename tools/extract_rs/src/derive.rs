@@ -1,4 +1,4 @@
-//! Disassembly-driven derivation: pselect/futex waiter layout and the
+﻿//! Disassembly-driven derivation: pselect/futex waiter layout and the
 //! nf_logger slide slot. Direct ports of the Python analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,8 +146,10 @@ fn sum_chain_frames(
     let mut total = 0u64;
     for name in names {
         let dis = disassemble_symbol(kernel, symbols, sorted, name, OBJDUMP_CAP)?;
+        let frame = first_sp_frame(&dis, name)?;
+        eprintln!("debug: mcast chain {name} frame={frame:#x}");
         total = total
-            .checked_add(first_sp_frame(&dis, name)?)
+            .checked_add(frame)
             .ok_or_else(|| ExtractError::new("multicast frame depth overflow"))?;
     }
     Ok(total)
@@ -192,7 +194,7 @@ fn waiter_local_from_dis(lines: &[String], pi_tree_entry: u64) -> Option<u64> {
 }
 
 /// Static one-shot multicast `waiter_off` for the target image:
-/// `(Σ setsockopt_frames − greqs_off) − (Σ futex_frames − waiter_local_off)`.
+/// `(鍗?setsockopt_frames 閳?greqs_off) 閳?(鍗?futex_frames 閳?waiter_local_off)`.
 /// Validated to reproduce the A301SO hardware value (`0x60`).
 pub fn multicast_waiter_off(
     kernel: &[u8],
@@ -201,9 +203,106 @@ pub fn multicast_waiter_off(
     buffer_size: u64,
     pi_tree_entry: u64,
 ) -> Result<McastWaiterGeometry> {
+    for name in SETSOCKOPT_CHAIN.iter().chain(FUTEX_CHAIN.iter()) {
+        let dis = disassemble_symbol(kernel, symbols, sorted, name, OBJDUMP_CAP)?;
+        let mut this_va: u64 = 0;
+        for (sym, addrs) in symbols.iter() {
+            if sym == name {
+                if let Some(a) = addrs.iter().next() { this_va = *a; }
+            }
+        }
+        for l in &dis {
+            let t = l.trim();
+            if (t.contains("bl ") || t.starts_with("b ")) && !t.contains("bl ") == false || t.starts_with("b ") {
+                if let Some(addr_part) = t.split_whitespace().nth(1) {
+                    if let Ok(target) = u64::from_str_radix(addr_part.trim_start_matches("0x"), 16) {
+                        // find callee name
+                        let mut best: u64 = 0; let mut nm = String::new();
+                        for (sym, addrs) in symbols.iter() {
+                            for a in addrs {
+                                if *a <= target && *a >= best { best = *a; nm = sym.clone(); }
+                            }
+                        }
+                        let kind = if t.contains("bl ") { "bl" } else { "b " };
+                        if !nm.is_empty() && nm.as_str() != *name {
+                            eprintln!("call: {name} {kind} {nm}+{:#x}", target.saturating_sub(best));
+                        }
+                    }
+                }
+            }
+        }
+    }
     let setsockopt_frames = sum_chain_frames(kernel, symbols, sorted, SETSOCKOPT_CHAIN)?;
     let futex_frames = sum_chain_frames(kernel, symbols, sorted, FUTEX_CHAIN)?;
     let ip = disassemble_symbol(kernel, symbols, sorted, "ip_setsockopt", OBJDUMP_CAP)?;
+    {
+        // Debug: print EVERY `mov w2, #buffer_size` site and the add that feeds
+        // it, so a wrong candidate hit is visible instead of silently used.
+        let mov = Regex::new(&format!(r"(?i)\bmov\s+w2,\s*#0x{buffer_size:x}\b")).unwrap();
+        let add = Regex::new(r"(?i)\badd\s+x\d+,\s*sp,\s*#0x([0-9a-f]+)").unwrap();
+        for (i, line) in ip.iter().enumerate() {
+            if mov.is_match(line) {
+                let lo = i.saturating_sub(8);
+                let mut feed: Option<&String> = None;
+                for prev in ip[lo..i].iter().rev() {
+                    if add.is_match(prev) {
+                        feed = Some(prev);
+                        break;
+                    }
+                }
+                eprintln!(
+                    "debug: ip_setsockopt mov w2,#0x{buffer_size:x} at #{i} addr={}",
+                    line.split(':').next().unwrap_or("?")
+                );
+                for (j, w) in ip[i.saturating_sub(12)..(i + 3).min(ip.len())]
+                    .iter()
+                    .enumerate()
+                {
+                    eprintln!(
+                        "debug:   [{}] {}",
+                        i.saturating_sub(12) + j,
+                        w.trim()
+                    );
+                }
+                if let Some(f) = feed {
+                    eprintln!("debug:   fed by {}", f.trim());
+                }
+            }
+        }
+    }
+    let ims = disassemble_symbol(kernel, symbols, sorted, "ip_mc_source", OBJDUMP_CAP)?;
+    for l in &ims {
+        let t = l.trim();
+        if t.contains("bl ") {
+            // Resolve the branch target to the nearest known symbol at/below it.
+            if let Some(addr_part) = t.split("bl ").nth(1) {
+                if let Ok(target) = u64::from_str_radix(
+                    addr_part.trim().trim_start_matches("0x"),
+                    16,
+                ) {
+                    let mut best: u64 = 0;
+                    let mut name = "?".to_string();
+                    for (sym, addrs) in symbols.iter() {
+                        for a in addrs {
+                            if *a <= target && *a >= best {
+                                best = *a;
+                                name = sym.clone();
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "ims: {} -> {name}+{:#x}",
+                        t,
+                        target.saturating_sub(best)
+                    );
+                }
+            } else {
+                eprintln!("ims: {}", t);
+            }
+        } else if t.starts_with("stp x29") || t.contains("sub sp, sp") {
+            eprintln!("ims: {}", t);
+        }
+    }
     let greqs = greqs_offset_from_dis(&ip, buffer_size)
         .ok_or_else(|| ExtractError::new("ip_setsockopt multicast copy window not found"))?;
     let fw = disassemble_symbol(
@@ -215,6 +314,27 @@ pub fn multicast_waiter_off(
     )?;
     let waiter_local = waiter_local_from_dis(&fw, pi_tree_entry)
         .ok_or_else(|| ExtractError::new("futex_wait_requeue_pi waiter local not found"))?;
+    {
+        // Debug: print every x27 = sp + off candidate and whether the pi_tree
+        // index followed within 8 lines, so a mis-hit is visible.
+        let set = Regex::new(r"(?i)\badd\s+x27,\s*sp,\s*#0x([0-9a-f]+)").unwrap();
+        let idx = Regex::new(&format!(
+            r"(?i)\badd\s+x\d+,\s*x27,\s*#0x{pi_tree_entry:x}\b"
+        ))
+        .unwrap();
+        for (i, line) in fw.iter().enumerate() {
+            if set.is_match(line) {
+                let hi = (i + 8).min(fw.len());
+                let confirmed = fw[i + 1..hi].iter().any(|l| idx.is_match(l));
+                eprintln!(
+                    "debug: futex_wait_requeue_pi add x27,sp at #{} addr={} pi_index_followed={}",
+                    i,
+                    line.split(':').next().unwrap_or("?"),
+                    confirmed
+                );
+            }
+        }
+    }
     let setsockopt_depth = setsockopt_frames
         .checked_sub(greqs)
         .ok_or_else(|| ExtractError::new("greqs offset exceeds setsockopt frames"))?;
@@ -467,7 +587,12 @@ pub fn derive_pselect_layout(
     let mut frames: BTreeMap<String, u64> = BTreeMap::new();
     for (key, text) in &dis {
         let full_name = names.iter().find(|(k, _)| k == key).unwrap().1;
-        frames.insert(format!("frame_{key}"), first_sp_frame(text, full_name)?);
+        let value = first_sp_frame(text, full_name)?;
+        eprintln!("debug: {full_name} frame={value:#x} prologue:");
+        for line in text.iter().take(8) {
+            eprintln!("debug:   {line}");
+        }
+        frames.insert(format!("frame_{key}"), value);
     }
 
     // 6.6 names the rb_nodes tree/pi_tree; 6.1 calls them
@@ -607,7 +732,13 @@ pub fn derive_pselect_layout(
         .map(|key| frames[&format!("frame_{key}")])
         .sum();
     let futex_waiter = -(futex_sum as i64) + *waiter_local as i64;
+    for (key, value) in &frames {
+        eprintln!("debug: frame {key} = {value:#x}");
+    }
     let delta = futex_waiter - pselect_word0;
+    eprintln!(
+        "debug: pselect frames={frame_sum:#x} buffer={pselect_buffer:#x} word0={pselect_word0} | futex frames={futex_sum:#x} waiter={waiter_local:#x} local={futex_waiter} | delta={delta}",
+    );
     if delta < 0 || delta % 8 != 0 {
         return Err(ExtractError::new(format!(
             "pselect/futex overlap is not a non-negative qword: {delta}"
