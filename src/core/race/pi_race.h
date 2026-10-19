@@ -83,6 +83,14 @@ namespace ghostlock::race {
         std::atomic<int32_t> consumer_gate_syscall;
         std::atomic<uint32_t> route_delay_usec;
         std::atomic<int32_t> fast_repair;
+        /* Two-phase multicast handshake: the waiter re-enters FUTEX_WAIT_
+     * REQUEUE_PI AFTER the route overlay (setsockopt stamp) has been planted
+     * on this thread's stack. The overlay bytes survive the kernel's waiter
+     * initialization (which rewrites only tree_entry/task) and become the
+     * live rt_waiter's pi_tree_entry once the CMP requeue enqueues it — the
+     * PI dequeue then walks the crafted links. The main thread waits for
+     * this flag before firing the CMP. */
+        std::atomic<int32_t> overlay_ready;
         int32_t main_cpu = 0;
         int32_t consumer_cpu = 0;
         ghostlock::support::PthreadOwner waiter_owner;

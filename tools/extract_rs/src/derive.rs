@@ -1,4 +1,4 @@
-﻿//! Disassembly-driven derivation: pselect/futex waiter layout and the
+//! Disassembly-driven derivation: pselect/futex waiter layout and the
 //! nf_logger slide slot. Direct ports of the Python analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,7 +147,8 @@ fn sum_chain_frames(
     for name in names {
         let dis = disassemble_symbol(kernel, symbols, sorted, name, OBJDUMP_CAP)?;
         let frame = first_sp_frame(&dis, name)?;
-        eprintln!("debug: mcast chain {name} frame={frame:#x}");
+        let off = unique_offset(symbols, name)?;
+        eprintln!("debug: mcast chain {name} off=0x{off:x} frame={frame:#x}");
         total = total
             .checked_add(frame)
             .ok_or_else(|| ExtractError::new("multicast frame depth overflow"))?;
@@ -194,7 +195,7 @@ fn waiter_local_from_dis(lines: &[String], pi_tree_entry: u64) -> Option<u64> {
 }
 
 /// Static one-shot multicast `waiter_off` for the target image:
-/// `(鍗?setsockopt_frames 閳?greqs_off) 閳?(鍗?futex_frames 閳?waiter_local_off)`.
+/// `(閸?setsockopt_frames 闁?greqs_off) 闁?(閸?futex_frames 闁?waiter_local_off)`.
 /// Validated to reproduce the A301SO hardware value (`0x60`).
 pub fn multicast_waiter_off(
     kernel: &[u8],
@@ -517,6 +518,8 @@ pub fn derive_pselect_layout(
 
     let mut dis: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (key, name) in &names {
+        let start = unique_offset(symbols, name)?;
+        eprintln!("debug: SYMOFF {name} = 0x{start:x}");
         dis.insert(
             key,
             disassemble_symbol(kernel, symbols, sorted_offsets, name, OBJDUMP_CAP)?,
@@ -1161,3 +1164,4 @@ pub fn multicast_geometry_btf_only(
     }
     geometry
 }
+

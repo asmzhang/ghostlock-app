@@ -62,7 +62,7 @@ TARGET_CONFIG ?= kernel/target.h
 
 COMMON_FLAGS := -O2 -flto -Wall -Wextra -Wconversion -Wsign-conversion \
   -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
-  -Icore -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
+  -Icore -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\" $(EXTRA_FLAGS)
 CFLAGS := $(COMMON_FLAGS) -std=gnu11
 CXXFLAGS := $(COMMON_FLAGS) -std=c++23 -fno-rtti
 LDFLAGS := -fPIE -pie -pthread -flto -static-libstdc++

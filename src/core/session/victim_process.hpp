@@ -29,6 +29,11 @@ namespace ghostlock::session::victim {
     /* Stage verification callbacks. */
     int32_t verify_selinux_stage(void *context);
 
+#ifdef GHOSTLOCK_PHYS_PROBE
+    void snapshot_boot_id(void);
+    int32_t verify_bootid_hit(void *context);
+#endif
+
     int32_t verify_w2_stage(void *context);
 
     int32_t verify_seccomp_probe_stage(void *context);

