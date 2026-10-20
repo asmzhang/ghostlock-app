@@ -1,4 +1,4 @@
-//! Disassembly-driven derivation: pselect/futex waiter layout and the
+﻿//! Disassembly-driven derivation: pselect/futex waiter layout and the
 //! nf_logger slide slot. Direct ports of the Python analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -48,7 +48,7 @@ pub fn unique_offset_optional(symbols: &RelSymbols, name: &str) -> Option<u64> {
     unique_offset(symbols, name).ok()
 }
 
-fn disassemble_symbol(
+pub fn disassemble_symbol(
     kernel: &[u8],
     symbols: &RelSymbols,
     sorted_offsets: &[u64],
@@ -195,7 +195,7 @@ fn waiter_local_from_dis(lines: &[String], pi_tree_entry: u64) -> Option<u64> {
 }
 
 /// Static one-shot multicast `waiter_off` for the target image:
-/// `(閸?setsockopt_frames 闁?greqs_off) 闁?(閸?futex_frames 闁?waiter_local_off)`.
+/// `(闁?setsockopt_frames 闂?greqs_off) 闂?(闁?futex_frames 闂?waiter_local_off)`.
 /// Validated to reproduce the A301SO hardware value (`0x60`).
 pub fn multicast_waiter_off(
     kernel: &[u8],
