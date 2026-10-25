@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <optional>
 
 namespace {
     using ghostlock::host::script;
@@ -37,7 +38,8 @@ namespace {
         return condition;
     }
 
-    ghostlock::runtime::RunResult run_once() {
+    ghostlock::runtime::RunResult run_once(
+            std::optional<uint8_t> leaf_pin = std::nullopt) {
         ghostlock::profile::kernel_offsets decoded{};
         decoded.meta.kernel_major = 6;
         decoded.execution.w1_attempts = 3;
@@ -45,6 +47,7 @@ namespace {
         decoded.execution.w2_attempts = 4;
         decoded.execution.w3_chain_rounds = 2;
         decoded.execution.w3_attempts = 3;
+        decoded.misc.w3_leaf_to_target8 = leaf_pin;
         ghostlock::session::g_exploit_session.profile =
                 ghostlock::profile::TargetProfile::from(&decoded);
         return ghostlock::runtime::Pipeline<
@@ -110,6 +113,31 @@ namespace {
                      "selinux: verify_selinux retried twice");
         return ok;
     }
+
+    /* A profile that pins W3's leaf direction must drop the W3-0 probe route:
+     * one fewer write round, and the two seccomp writes aimed directly. */
+    bool test_leaf_direction_pinned() {
+        reset_script();
+        const auto unpinned = run_once();
+        const int32_t unpinned_routes = count_calls("route");
+        const int32_t unpinned_leaf = count_calls("verify_leaf");
+
+        reset_script();
+        const auto pinned = run_once(uint8_t{0});
+        const int32_t pinned_routes = count_calls("route");
+        const int32_t pinned_leaf = count_calls("verify_leaf");
+
+        bool ok = true;
+        ok &= expect(unpinned.code == ghostlock::runtime::RunCode::Completed,
+                     "pin: unpinned baseline completes");
+        ok &= expect(unpinned_leaf >= 1, "pin: unpinned baseline runs the leaf probe");
+        ok &= expect(pinned.code == ghostlock::runtime::RunCode::Completed,
+                     "pin: pinned run completes");
+        ok &= expect(pinned_leaf == 0, "pin: pinned run never runs the leaf probe");
+        ok &= expect(pinned_routes == unpinned_routes - 1,
+                     "pin: pinned run spends exactly one route fewer");
+        return ok;
+    }
 } // namespace
 
 int main() {
@@ -118,6 +146,7 @@ int main() {
     ok &= test_w2_retry_until_success();
     ok &= test_w2_exhausts_attempts();
     ok &= test_selinux_retry_then_w2();
+    ok &= test_leaf_direction_pinned();
     if (ok) {
         std::puts("backend_dataflow_test: ok");
         return 0;

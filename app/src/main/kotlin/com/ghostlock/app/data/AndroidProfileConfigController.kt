@@ -158,6 +158,10 @@ internal class AndroidProfileConfigController(
                 ) {
                     invalid += "$routePrefix.waiter_shift"
                 }
+                val leaf = value("$routePrefix.w3_leaf_to_target8")
+                if (leaf != null && leaf !in 0L..1L) {
+                    invalid += "$routePrefix.w3_leaf_to_target8"
+                }
             }
 
             "multicast_waiter" -> {
@@ -217,6 +221,10 @@ internal class AndroidProfileConfigController(
                         shift < Int.MIN_VALUE.toLong() || shift > Int.MAX_VALUE.toLong()
                     ) {
                         invalid += "$fallbackPrefix.waiter_shift"
+                    }
+                    val leaf = value("$fallbackPrefix.w3_leaf_to_target8")
+                    if (leaf != null && leaf !in 0L..1L) {
+                        invalid += "$fallbackPrefix.w3_leaf_to_target8"
                     }
                 }
 
@@ -874,7 +882,7 @@ internal class AndroidProfileConfigController(
         /** Fields each route branch carries, used to seed a switched-to route. */
         private val RouteBranchFields = mapOf(
             "tcp_zerocopy" to listOf("compact_waiter"),
-            "select_stack" to listOf("waiter_shift"),
+            "select_stack" to listOf("waiter_shift", "w3_leaf_to_target8"),
             "multicast_waiter" to listOf(
                 "waiter_off", "buffer_size", "task_offset", "lock_offset",
                 "compact_waiter",
