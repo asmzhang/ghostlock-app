@@ -572,12 +572,20 @@ namespace ghostlock::session::victim {
              * and prove that a shell can run a command at all here, before the
              * handoff is allowed to depend on one. */
             const char *handoff_home = config::runtime_config_snapshot().home_dir.c_str();
-            const off_t script_size = lseek(probe.get(), 0, SEEK_END);
-            (void) lseek(probe.get(), 0, SEEK_SET);
+            /* open() above may have failed; lseek/read on fd -1 would only add a
+             * second errno to the record, so keep both at -1 in that case. */
+            off_t script_size = -1;
+            ssize_t script_bytes = -1;
+            if (probe.get() >= 0) {
+                script_size = lseek(probe.get(), 0, SEEK_END);
+                (void) lseek(probe.get(), 0, SEEK_SET);
+            }
             handoff_breadcrumb(handoff_home, "worker-script-size",
                                static_cast<int32_t>(script_size));
             std::array < char, 32 > script_head{};
-            const ssize_t script_bytes = read(probe.get(), script_head.data(), script_head.size());
+            if (probe.get() >= 0) {
+                script_bytes = read(probe.get(), script_head.data(), script_head.size());
+            }
             handoff_breadcrumb(handoff_home, "worker-script-read",
                                static_cast<int32_t>(script_bytes));
             std::array < char, 384 > sh_probe{};
