@@ -20,7 +20,11 @@ namespace ghostlock::kernel {
 
     inline constexpr unsigned long ORDER3_SIZE = PAGE_SIZE << MM_ORDER;
     inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 2;
-    inline constexpr unsigned SKB_RECLAIM_SENDS = 4;
+    /* 4 sends cover 8 of the ~16 whole pages that are free at send time (see
+     * the v4 note in util.cpp), so the leaked page is missed in a sizeable
+     * fraction of routes. 8 sends cover the whole pool; SO_SNDBUF is 1 MiB and
+     * 8 * 64 KiB = 512 KiB, so every send still queues a full-length skb. */
+    inline constexpr unsigned SKB_RECLAIM_SENDS = 8;
     inline constexpr unsigned long FOPS_TABLE_OFF = FOPS_OFF;
     inline constexpr int32_t SKB_FRAG_BIAS = 0;
 
