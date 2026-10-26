@@ -20,11 +20,15 @@ namespace ghostlock::kernel {
 
     inline constexpr unsigned long ORDER3_SIZE = PAGE_SIZE << MM_ORDER;
     inline constexpr unsigned long SKB_SEND_SIZE = ORDER3_SIZE * 2;
-    /* 4 sends cover 8 of the ~16 whole pages that are free at send time (see
-     * the v4 note in util.cpp), so the leaked page is missed in a sizeable
-     * fraction of routes. 8 sends cover the whole pool; SO_SNDBUF is 1 MiB and
-     * 8 * 64 KiB = 512 KiB, so every send still queues a full-length skb. */
-    inline constexpr unsigned SKB_RECLAIM_SENDS = 8;
+    /* Each send queues one 64 KiB skb, i.e. two 32 KiB blocks, and the whole
+     * free pool at send time is ~16 blocks (see the v4 note in util.cpp). 8
+     * sends therefore cover the pool exactly once, which leaves no slack for a
+     * block that some other allocation steals between the frees and the sends
+     * (the fsynced breadcrumbs allocate on every step). 32 sends give 64 blocks
+     * of coverage, so one stolen block no longer costs the route. SO_SNDBUF is
+     * 8 MiB and 32 * 64 KiB = 2 MiB, so every send still queues a full-length
+     * skb. */
+    inline constexpr unsigned SKB_RECLAIM_SENDS = 32;
     inline constexpr unsigned long FOPS_TABLE_OFF = FOPS_OFF;
     inline constexpr int32_t SKB_FRAG_BIAS = 0;
 

