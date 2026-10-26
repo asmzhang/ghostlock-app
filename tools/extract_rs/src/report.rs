@@ -226,11 +226,16 @@ pub fn conf_route_geometry(
         }
         // The 5.x one-shot multicast branch runs entirely from probe-derived
         // constants (waiter_off / buffer_size), BTF-derived rt_mutex_waiter
-        // task/lock offsets and the fixed 5.x waiter-layout flag. Emit all of
-        // them for every 5.x kernel so the generated profile runs without
-        // manual edits; a kernel without BTF omits only the task/lock keys.
+        // task/lock offsets and the compact-waiter ordinal for that train. Emit
+        // all of them for every 5.x kernel so the generated profile runs
+        // without manual edits; a kernel without BTF omits only the task/lock
+        // keys. The ordinal must follow the release: 5.10 is 2, other 5.x is 1
+        // (see `derive::multicast_compact_kind`).
         "multicast_waiter" if major == Some(5) => {
-            crate::derive::multicast_geometry_corroborated(structs)
+            crate::derive::multicast_geometry_corroborated(
+                structs,
+                crate::derive::multicast_compact_kind(release),
+            )
         }
         _ => Vec::new(),
     }

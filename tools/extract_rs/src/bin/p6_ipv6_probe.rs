@@ -4,8 +4,6 @@
 //!
 //! Usage: `p6-ipv6-probe <image>`
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use ghostlock_extract::boot::BootImage;
 use ghostlock_extract::derive::{disassemble_symbol, relative_symbols, RelSymbols};
 use ghostlock_extract::kallsyms_finder;
