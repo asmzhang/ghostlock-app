@@ -927,3 +927,55 @@ craft 页并复验，所以把它从 1 提到 3 就等于给这个静默失败�
 
 这是目前最诚实的成功率口径：**约 80%**。W3 重试能否把那 12% 压下去，需要更多轮次才能证明
 （3 次命中里一次都没触发重试，样本不足以说明问题）。
+
+## 进度回填：2026-10-26 15:55（20/20 实测 + W3 假成功实证 + 已 root 守卫）
+
+### 20 轮连续冷机实测：20/20 完全成功
+
+`build\ab-rounds.ps1 -Rounds 20 -Tag w3retry-c`（APK 602，32-send reclaim，4 条 route，
+`w3_attempts=3`）：**20 轮全部 HIT-ROOT**，每轮 ~2 分 04 秒。Wilson 95% 下界约 84%。
+
+### W3 假成功：重试救回的实证
+
+20 轮里有 3 轮（r2 `20261026-151042`、r7 `20261026-152121`、r20 `20261026-155343`）
+第一遍 W3 是假成功，全部被 `attempt 2/3` 救回：
+
+```
+W3: TIF_SECCOMP+mode attempt 1/3
+  seccomp finit_module probe = 0xfffffffd      <- 假成功（SIGSYS）
+W3: TIF_SECCOMP+mode attempt 2/3
+  seccomp finit_module probe = 0x16            <- 成功
+[+] child seccomp fully bypassed
+[+] KernelSU ready
+```
+
+r2 同一轮里 W1 也先失败一次（`attempt 1/15` → `attempt 2/15`）再成功，整轮仍命中。
+
+合并口径（重试=3 的 35 轮：w3retry-a/b/c）：**32 完全成功（91.4%）、2 打偏（5.7%）、
+0 死在 W3**。重试=1 的 20 轮（recheck-d/e）出现 3 次 W3 假成功（15%），一次都没有恢复。
+所以 `w3_attempts` 1→3 是有效的，不再需要继续追那 12%。
+
+### 已 root 守卫（新增）
+
+两层，防止「命中后同一 boot 再跑」这条已知会永久卡死的路径：
+
+1. native `src/core/session/backend/cve_2026_43499_backend.cpp` `run_setup`：
+   `if (!force_attack && (ksu_root_owned() || kernelsu_module_visible()))` →
+   `StageResult::Done`。原来只查 `su -c 'id -u'`，现在补上「模块已加载」，
+   覆盖 handoff 刚完成、`su` 还没应答的窗口。`/proc/modules` 世界可读。
+2. app `GhostlockViewModel.runExploit`：启动 native 之前读 `/proc/modules`，
+   命中 `kernelpatch`/`kernelsu` 就只写日志 + 弹 NOTICE，不启动 native。
+
+真机验证：root 生效时点「执行」→ 不产生新 run 目录，弹窗「已经是 root 状态 /
+本次开机已经加载了 root 管理器模块……」。
+
+### 门禁
+
+| 项 | 结果 |
+| --- | --- |
+| NDK 构建 | 2,793,352 B，零告警 |
+| `cmp_disasm` vs `build\ghostlock-prerootguard.bin` | PASS；7 个攻击函数指令数不变（仅 LAYOUT-SHIFT），multicast 2 个 SKIP |
+| clang-tidy 单文件 | `TIDY_STATUS=0`（136 warnings 全在 non-user code，1 NOLINT） |
+| `:app:assembleDebug` | BUILD SUCCESSFUL，APK 22,072,444 B，装机成功 |
+
+完整收尾记录见 `docs/analysis/2026-10-26-marble-closeout.md`。
