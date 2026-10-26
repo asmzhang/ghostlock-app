@@ -256,4 +256,6 @@
     <string name="fallback_label">回退路由</string>
     <string name="fallback_none">无</string>
     <string name="field_fallback_to">回退目标</string>
+    <string name="already_rooted_title">已经是 root 状态</string>
+    <string name="already_rooted_message">本次开机已经加载了 root 管理器模块，再跑一遍会在已经改过的内核上重复打补丁，可能导致设备卡死。想干净地重跑请先重启。</string>
 </resources>

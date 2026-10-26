@@ -871,12 +871,37 @@ class GhostlockViewModel(
         }
     }
 
+    /**
+     * A root manager module that is already live in this boot. The attack
+     * re-enforces an already patched kernel and can wedge it, so the run is
+     * refused instead of repeated. /proc/modules is world readable.
+     */
+    private fun rootModuleLoaded(): Boolean = runCatching {
+        java.io.File("/proc/modules").useLines { lines ->
+            lines.any { line ->
+                line.startsWith("kernelpatch ") || line.startsWith("kernelsu ")
+            }
+        }
+    }.getOrDefault(false)
+
     private fun runExploit() {
         val snapshot = kernelSnapshot ?: return
         if (!snapshot.kernelSupported) {
             if (beginOperation()) {
                 appendLog("result: exploit chain unsupported by this kernel")
                 endOperation()
+            }
+            return
+        }
+        if (rootModuleLoaded()) {
+            appendLog("result: already rooted on this boot; root manager module is live")
+            mutableState.update {
+                it.copy(
+                    dialogVisible = true,
+                    dialogType = DialogType.NOTICE,
+                    dialogTitleRes = R.string.already_rooted_title,
+                    dialogMessageRes = R.string.already_rooted_message,
+                )
             }
             return
         }

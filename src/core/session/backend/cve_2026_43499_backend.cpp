@@ -497,8 +497,14 @@ namespace ghostlock::session::backend {
          * route, and the objective is already met. Bail out cleanly instead; a
          * cold boot clears the module for a real run. The forced test skips
          * this check on purpose and relies on the root script discarding the
-         * child. */
-        if (!force_attack && ksu_root_owned()) {
+         * child.
+         *
+         * The module check closes the window right after a successful handoff
+         * where kernelpatch.ko is already live but `su` has not answered yet:
+         * re-entering the attack there would run against the modified kernel
+         * for no gain. /proc/modules is world-readable, so this works from the
+         * unprivileged app context too. */
+        if (!force_attack && (ksu_root_owned() || kernelsu_module_visible())) {
             pr_warning("KernelSU already has root; skipping exploit "
                 "(cold boot for a clean run, or enable the forced test)\n");
             return StageResult::Done;

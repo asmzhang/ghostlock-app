@@ -256,4 +256,6 @@
     <string name="fallback_label">Fallback route</string>
     <string name="fallback_none">None</string>
     <string name="field_fallback_to">fallback_to</string>
+    <string name="already_rooted_title">Already rooted</string>
+    <string name="already_rooted_message">A root manager module is already live on this boot, so running the chain again would re-patch an already patched kernel and can wedge the device. Reboot first if you want a clean run.</string>
 </resources>
