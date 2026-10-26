@@ -894,3 +894,36 @@ Wilson 95%（17/20）：64%–95%。
 `src/core/support/util.cpp`（`SO_SNDBUF` 1 MiB→8 MiB、`step6 reclaim-sends` 面包屑移出循环）、本文件。
 门禁：NDK 构建零告警；`cmp_disasm` 仅 `prepare_good_kernel_page` 2194→2116
 （循环次数 + 内联调用移除，已复核），其余 7 个攻击函数 LAYOUT-SHIFT-only。
+
+## 进度回填：2026-10-26 14:31（W3 重试 + 20 轮「零打偏」的记录被打破）
+
+### 改动：`stages.w3_attempts` 1 → 3（只改 profile，不动 native）
+3 次 W3 失败现场全部是 `seccomp finit_module probe = 0xfffffffd`，而
+`src/core/session/victim_process.cpp:486` 把这个值定义为「探针被信号杀死」（SIGSYS）——
+即两条 W3 route 都报了 `route_done status=0`，但 `rb_erase` 什么都没写，seccomp 仍然武装。
+`w3_attempts` 的重试循环（`cve_2026_43499_backend.cpp:346-383`）本来就在每次尝试后重新
+craft 页并复验，所以把它从 1 提到 3 就等于给这个静默失败加两次独立重抽；`w3_chain_rounds`
+保持 1（那一层会 re-park 子进程，代价更大）。APK 602 已装。
+
+### 5 轮实测（`build/ab-w3retry-a.csv`，APK 602）
+| 轮 | 结果 | uptime |
+| --- | --- | --- |
+| 1 | TAP-NO-RUN | 70.15 s |
+| 2 | DEVICE-DEAD | 69.39 s |
+| 3–5 | HIT-ROOT | 75.23 / 69.70 / 69.41 s |
+
+**这条记录很重要：`DEVICE-DEAD` 出现在 uptime 69.39 秒，正好落在「零打偏」那 20 轮的
+66.6–70.1 秒区间里。** 所以「晚点火」不是因果，20 轮 0 次打偏只能算一次好运气（或当时设备
+状态更好）。头两轮紧跟在 APK 安装之后，系统还在 dexopt/媒体扫描，这与「负载影响抢页」的
+旧假设一致，但同样没有对照。
+
+### 25 轮合并口径（recheck-d 10 + recheck-e 10 + w3retry-a 5）
+| 结果 | 次数 | 比例 |
+| --- | --- | --- |
+| 完整成功（HIT-ROOT） | 20 | 80% |
+| 死在 W3 seclamp clear | 3 | 12% |
+| 打偏（DEVICE-DEAD） | 1 | 4% |
+| 没点着（TAP-NO-RUN） | 1 | 4% |
+
+这是目前最诚实的成功率口径：**约 80%**。W3 重试能否把那 12% 压下去，需要更多轮次才能证明
+（3 次命中里一次都没触发重试，样本不足以说明问题）。
