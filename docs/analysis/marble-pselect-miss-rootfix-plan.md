@@ -816,3 +816,81 @@ p:kprobes/glk_enq rt_mutex_adjust_prio_chain+0x570 lock=%x27 node=%x28 link=%x1 
   需人工长按电源键；因此本批**没有真机门禁**，`cmp_disasm` 是唯一的机器码级证据。
 - 打偏根因仍停在 H1（抢页失手）/ H2（假 `rt_mutex` 头部写错）二选一，
   决定性探针 `glk_enq` 已就绪，等设备恢复。
+## 进度回填：2026-10-26 11:50（打偏死点再缩小：死在入树之前）
+
+### 探针实测（`glk_enq` 加宽窗口，一次真实打偏）
+```
+libghostlock.so-8417  glk_lk  task=0xffffff804de65c80 lk=0xffffff886e828000 n1=0xffffff880488d790 n2=0 n3=0
+libghostlock.so-8417  glk_adj task=0xffffff804de65c80 blocked=0xffffff886e829e70 olock=0x0 owaiter=0xffffff886e828000
+libghostlock.so-8417  glk_flt addr=0x41 esr=0x96000005 r0=0xffffff886e829e70 r28=0xffffff886e829e70 r29=0xffffff886e828100
+```
+三条事实：
+
+1. `glk_adj` 与 `glk_flt` 之间**没有 `glk_enq`** —— `rt_mutex_adjust_prio_chain+0x570`（`lock->waiters` 入树点）从未执行。崩溃发生在**入树之前**，即读 `lock->waiters.rb_node` / 取 top waiter 那一步，不是此前假设的 `rb_insert_color` 插入。
+2. 崩溃地址是 `addr=0x41`，不是随机垃圾（随机填弃会是 `0x4141414141414141` 形态）——像某个字段只有 1 字节有效。
+3. `lock` 地址正好等于我们算的页基址（`lk == 0xffffff886e828000`，与面包屑 `psel page=` 一致），但 `*(lock+8)` 是 `0xffffff880488d790`，不是我们写的 `page+0x300`。
+
+### 结论与待验证假设
+- 页基址对上了，但页内偏移不是我们写的内容 ⇒ 只有两种可能：① 页不是我们的（抢页失手）；② `SKB_DATA_DELTA = -0xe80` / `SKB_FRAG_BIAS = 0xe80` 这组"用户态 buffer ↔ 内核页"的偏移在这个内核上不成立，`base+8` 落进了填充区。
+- `addr=0x41` 更支持 ②：填充区被当作指针读出一个小值。验证办法是加宽探针窗口，同时读 `lock+0x00/0x08/0x10/0x18` 与 `lock+0xe80+0x00/0x08/0x10/0x18`，看真正的假 `rt_mutex` 头部落在哪一组。
+- `/proc/kcore` 在本机不存在（`ls` 报 No such file），所以无法直接 dump 内核内存来比对，只能靠 kprobe 逐字段读。
+
+### 32-send 加宽的实测（不构成改善证据）
+- `SKB_RECLAIM_SENDS` 8 → 32、`SO_SNDBUF` 1 MiB → 8 MiB、去掉循环内逐条 fsync；门禁：`cmp_disasm` 仅 `prepare_good_kernel_page` 2194 → 2116（循环次数 + 内联调用移除），其余 7 个攻击函数 LAYOUT-SHIFT-only。
+- 冷机批测 10 轮：**5 命中 / 5 打偏 = 50%**，对照 8-send 的 16/41 = 39%；Wilson 区间重叠（24%–76% vs 25%–55%），**不能声称改善**。
+
+### 失败代价的变化（真正的收益）
+- 打偏不再把整机钉死：设备在约 90 秒内由厂商看门狗自行重启，一轮失败的成本从"几小时 + 人工按电源键"降到"一次重启 + settle"。
+- 因此新增 `build/root-until-hit.ps1`：按轮重试直到 `HIT-ROOT` 为止。首次使用 **attempt 1 即命中**，随后 `tools/trials/apatch_finish.ps1` 拿到 `VERDICT: SUCCESS - APatch root available (u:r:magisk:s0)`。
+- 尝试给内核设 `panic_on_oops=1`（把 oops 变成 5 秒 panic）的 APatch 模块 `build/panicmod.zip` 安装成功但脚本未被解出（模块目录只有 `module.prop`），实测 `panic_on_oops` 仍为 0；**不需要它**，看门狗已足够。
+
+### 关键对照：成功轮**完全不进** PI 链式调整
+同一构建、同一探针（`glk_win` 挂在 `rt_mutex_adjust_prio_chain` 入口）下的两次运行：
+
+| 轮 | 结果 | `glk_adj`/`glk_lk`/`glk_win` 命中数 | 说明 |
+| --- | --- | --- | --- |
+| 11:44 那次 | 打偏（fault addr=0x41） | 3 条 | 进了链式调整并在入树前崩 |
+| 11:51 那次（run 20261026-115126） | **W1 成功**（`route-returned code=0 elapsed=1209ms`） | **0 条** | 内核根本没走这条路径 |
+
+这条对照把问题重新定性：打偏不是"同一条 walk 里的时序竞争"，而是**内核走了另一条分支**——
+成功路径根本不进 `rt_mutex_adjust_prio_chain`（写入由别处完成），失败路径才进，而且一进就死。
+所以"让 walk 变稳"这个方向本身可能是错的；真正要做的是**查清什么条件下内核会去走这条链式调整**，把那个条件消掉。
+
+## 进度回填：2026-10-26 14:15（20 轮实测：85% 完整成功，0 次打偏）
+
+### 批跑前的 harness 修复（三个坑，全部落在 `build/ab-rounds.ps1`）
+1. **开机后 adb 未稳**：`sys.boot_completed=1` 比 USB gadget 稳定早好几秒，期间每条命令都
+   `device not found`。新增 `Wait-Stable`（连续 3 次 `adb shell echo ready` 成功）才进 settle。
+2. **冷启动焦点丢失**：`am start` 后 4 秒 `mCurrentFocus` 可能还不是本 app，改为等 8 秒 +
+   `monkey -p com.ghostlock.app -c android.intent.category.LAUNCHER 1` 兜底。
+3. **中文字面量在 Windows PowerShell 5.1 下永远匹配不上**：PS 5.1 按 OEM 码页解 adb stdout，
+   脚本里的「执行」与 XML 里的 UTF-8 字节不相等 ⇒ `Launch-Ready` 恒假、每轮 `LAUNCH-FAIL`。
+   改为**只匹配 ASCII 的 bounds 串**（`[494,2233][586,2262]` = 执行按钮，
+   `[494,2159][586,2221]` = 「上次攻击未完成」对话框的关闭按钮），并在脚本头强制
+   `[Console]::OutputEncoding` / `$OutputEncoding` 为 UTF-8。
+
+### 实测（同一份二进制：32-send + 4 条 route）
+| 批次 | 轮数 | 触发时 uptime | 完整成功 | 死在 W3 seclamp clear | 打偏 |
+| --- | --- | --- | --- | --- | --- |
+| recheck-d | 10 | 68.27–69.52 s | 9 | 1 | **0** |
+| recheck-e | 10 | 66.61–70.13 s | 8 | 2 | **0** |
+| 合计 | 20 | 66.6–70.1 s | **17（85%）** | 3（15%） | **0** |
+| 对照 reclaim32-a | 10 | 58.49–65.62 s | 5 | 0 | 5 |
+
+Wilson 95%（17/20）：64%–95%。
+
+### 唯一观察到的差异是点火时机
+三轮用同一 APK、同一二进制、同一设备；差别只在 harness 现在等 adb 稳定 + 30 秒静置，
+点击落在 uptime ≈ 66.6–70.1 秒，而旧批是 58.5–65.6 秒。**因果未证实**（缺一轮「提早点火」对照，
+约 10 分钟），但「等系统空闲下来再开枪」本身零成本、无副作用。
+
+### 剩余失败源已经换人
+打偏 0/20 之后，最大的失败源变成 **W3 seclamp clear 写不进去**（3/20 = 15%）：
+日志 `temporary root ready; KernelSU module not loaded (W3 seclamp clear failed)`、
+`finit_module probe=-ESRCH`，10-22 已记录过的老缺陷，与 pselect/打偏无关。下一步应转去修它。
+
+### 本批未提交改动
+`src/core/kernel/constants.hpp`（`SKB_RECLAIM_SENDS` 8→32 + 注释）、
+`src/core/support/util.cpp`（`SO_SNDBUF` 1 MiB→8 MiB、`step6 reclaim-sends` 面包屑移出循环）、本文件。
+门禁：NDK 构建零告警；`cmp_disasm` 仅 `prepare_good_kernel_page` 2194→2116
+（循环次数 + 内联调用移除，已复核），其余 7 个攻击函数 LAYOUT-SHIFT-only。
