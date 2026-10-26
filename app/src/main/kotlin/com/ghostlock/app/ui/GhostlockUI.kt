@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -623,25 +625,58 @@ private fun MainContent(
     scaffoldPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
-    LazyColumn(
-        modifier = modifier
-            .scrollEndHaptic()
-            .overScrollVertical()
-            .scrollEndHaptic()
-            .fillMaxHeight()
-            .nestedScroll(scrollBehavior.nestedScrollConnection)
-            .imePadding(),
-        contentPadding = pageContentPadding(scaffoldPadding),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item(key = "controls") {
-            ControlPanel(
-                state = state,
-                actions = actions,
-                modifier = Modifier.fillMaxWidth(),
-            )
+    val pageInsets = pageContentPadding(scaffoldPadding)
+    val layoutDirection = LocalLayoutDirection.current
+    Column(modifier = modifier.fillMaxHeight()) {
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .scrollEndHaptic()
+                .overScrollVertical()
+                .scrollEndHaptic()
+                .nestedScroll(scrollBehavior.nestedScrollConnection)
+                .imePadding(),
+            contentPadding = pageInsets,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item(key = "controls") {
+                ControlPanel(
+                    state = state,
+                    actions = actions,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
-        item(key = "run") {
+        /* ACTION-AREA-01: the loader choice and the run button live outside the
+         * scrolling list. As the list's last items they ended up half hidden
+         * behind the gesture bar on a 1080x2400 screen, and the only way to
+         * reach them was to guess that the page scrolls. The run button is the
+         * primary action of this screen: it must never need discovery. */
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = pageInsets.calculateStartPadding(layoutDirection),
+                    end = pageInsets.calculateEndPadding(layoutDirection),
+                    bottom = pageInsets.calculateBottomPadding() + 4.dp,
+                ),
+        ) {
+            /* Exactly two choices: a third "automatic" entry said "APatch first"
+             * while the default said KernelSU, so the list contradicted itself.
+             * Each choice now carries its own fallback (own loader first, then
+             * the other one) - see module_loader in the profile design doc. */
+            OverlaySpinnerPreference(
+                title = stringResource(R.string.module_loader_label),
+                items = listOf(
+                    R.string.module_loader_kernelsu,
+                    R.string.module_loader_apatch,
+                ).map { DropdownItem(icon = null, title = stringResource(it)) },
+                selectedIndex = state.moduleLoaderIndex,
+                summary = null,
+                showValue = true,
+                onSelectedIndexChange = actions::onModuleLoaderSelected,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
             RunButton(
                 running = state.running,
                 supported = state.kernelSupported &&
@@ -701,25 +736,6 @@ private fun ControlPanel(
                     onSelectedIndexChange = actions::onCpuPairSelected,
                 )
             }
-            /* Which manager loads the module sits here, before the run, because
-             * it changes what the exploit does at handoff - not something to
-             * discover afterwards in the editor.
-             * Exactly two choices: a third "automatic" entry used to say
-             * "APatch first" while the default said KernelSU, so the list
-             * contradicted itself. The fallback that made "automatic" look
-             * different is now inside both choices: each tries its own loader
-             * first and falls back to the other when it is not staged. */
-            OverlaySpinnerPreference(
-                title = stringResource(R.string.module_loader_label),
-                items = listOf(
-                    R.string.module_loader_kernelsu,
-                    R.string.module_loader_apatch,
-                ).map { DropdownItem(icon = null, title = stringResource(it)) },
-                selectedIndex = state.moduleLoaderIndex,
-                summary = null,
-                showValue = true,
-                onSelectedIndexChange = actions::onModuleLoaderSelected,
-            )
             SwitchPreference(
                 checked = state.safeModeEnabled,
                 onCheckedChange = actions::onSafeModeChanged,

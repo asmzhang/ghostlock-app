@@ -141,6 +141,7 @@ data class NativeProfileDocument(
                     "module_poll_interval_ms" to execution.handoffModulePollIntervalMs.toULong(),
                     "enforce_poll_attempts" to execution.handoffEnforcePollAttempts.toULong(),
                     "enforce_poll_interval_ms" to execution.handoffEnforcePollIntervalMs.toULong(),
+                    "module_loader" to execution.handoffModuleLoader.toULong(),
                 ),
             ),
         )
@@ -429,6 +430,7 @@ data class NativeProfileDocument(
                     handoffModulePollIntervalMs = vu("execution.handoff.module_poll_interval_ms"),
                     handoffEnforcePollAttempts = vu("execution.handoff.enforce_poll_attempts"),
                     handoffEnforcePollIntervalMs = vu("execution.handoff.enforce_poll_interval_ms"),
+                    handoffModuleLoader = vu("execution.handoff.module_loader"),
                     consumerMaxCalls = vu("execution.routes.select_stack.consumer_max_calls"),
                     consumerBurstCalls = vu("execution.routes.select_stack.consumer_burst_calls"),
                 ),
@@ -589,6 +591,9 @@ data class NativeProfileDocument(
                         "enforce_poll_interval_ms" ->
                             execution.copy(handoffEnforcePollIntervalMs = raw.toUInt())
 
+                        "module_loader" ->
+                            execution.copy(handoffModuleLoader = raw.toUInt())
+
                         else -> execution
                     }
 
@@ -703,6 +708,7 @@ data class ExecutionTuning(
     val handoffModulePollIntervalMs: UInt = 0u,
     val handoffEnforcePollAttempts: UInt = 0u,
     val handoffEnforcePollIntervalMs: UInt = 0u,
+    val handoffModuleLoader: UInt = 0u,
     val consumerMaxCalls: UInt = 0u,
     val consumerBurstCalls: UInt = 0u,
 )

@@ -20,14 +20,17 @@ name / 协议 / 版本，而不是取决于谁把模块插进去。
 
 | 事实 | 值 |
 | --- | --- |
-| APatch app | `me.bmax.apatch`，`versionName=9a63e0f`，`versionCode=11224`，`lastUpdateTime=2023-12-19`，uid 10270 |
-| 已加载模块版本 | `/sys/module/kernelpatch/version` = **0.13.8** |
-| 随包模块 | `app/src/main/assets/kernelpatch/android12-5.10_kernelpatch.ko`，183,312 B，模内 `version=0.13.8`，`vermagic=5.10.252-dirty` |
-| **APatch 自带的同名资产** | APK 内 `assets/android12-5.10_kernelpatch.ko` = 138,864 B，模内 `version=`**0.13.3**，`vermagic=5.10.252-dirty` |
+| APatch app（设备上） | `me.bmax.apatch`，`versionName=9a63e0f`，`versionCode=11224`，`lastUpdateTime=2023-12-19`，uid 10270 |
+| 已加载模块版本（当时） | `/sys/module/kernelpatch/version` = **0.13.8** |
+| 随包模块（**已换**） | `app/src/main/assets/kernelpatch/android12-5.10_kernelpatch.ko` = 183,056 B，模内 `version=`**0.13.9**，sha256 `67aa601c…`，取自 `APatch_11282_e8e4651_HEAD-release-signed.apk` |
+| APatch 11282 APK 自带 | `assets/android12-5.10_kernelpatch.ko` = 183,056 B，`version=`**0.13.9**（与上面的随包模块同一字节） |
+| APatch 11224 APK 自带 | `assets/android12-5.10_kernelpatch.ko` = 138,864 B，`version=`**0.13.3** |
+| 旧随包模块（作废） | 183,312 B，`version=0.13.8`，sha256 `e4254526…` |
 
-两者确实是同一个上游模块的两个不同构建（`kernelpatch-lkm` 日志前缀 81 vs 116 处，KPM 12 vs 14 处），
-**版本 0.13.3 与 0.13.8 不一致**。APatch app 的 `libapd.so` 也是它自己的（3,969,440 B），与随包模块的
-协议版本不匹配。
+三份同源不同构建；**0.13.3 / 0.13.8 / 0.13.9 互不相同**。ANR 的那一对是
+「11224 的界面 + 0.13.8 模块」。现在随包模块换成了 11282 对应的 0.13.9，并把「优先取管理器
+自带模块」的策略反转为「随包模块权威、管理器自带只做兜底」——否则装的是 11224 时，选 APatch
+会静默加载回 2023 年的 0.13.3，用户换上的 0.13.9 永远不生效。
 
 ### ANR 形态
 

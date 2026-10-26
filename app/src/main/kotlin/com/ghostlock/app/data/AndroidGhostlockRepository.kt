@@ -39,6 +39,7 @@ import java.util.concurrent.atomic.AtomicReference
 /** Android implementation of the domain repository. All platform I/O lives here. */
 class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
     private companion object {
+        const val ApatchPackage = "me.bmax.apatch"
         const val OffsetsFileName = "offsets.conf"
         const val LegacyOffsetsFileName = "offsets.json"
         const val UserProfilesDirectoryName = "user_profiles"
@@ -578,9 +579,6 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
         return try {
             val binary = File(appContext.applicationInfo.nativeLibraryDir, binaryName)
             require(binary.isFile) { "missing native binary: ${binary.absolutePath}" }
-            if (prepareKsud(workDir, onLog) != null) onLog("<k> ksud ready") else onLog("<k> warning: ksud not found")
-            if (prepareApd(workDir, onLog) != null) onLog("<k> libapd.so ready") else onLog("<k> warning: libapd.so not found")
-            if (prepareKpatch(workDir, onLog) != null) onLog("<k> kernelpatch.ko ready") else onLog("<k> warning: kernelpatch.ko not found")
             // U01-S14: a per-run KernelSU log path so a previous run's markers
             // can never satisfy the handoff probe; passed to the native process.
             val ksuLog = File(workDir, ksuLogName(System.currentTimeMillis()))
@@ -603,6 +601,17 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
                     "profile has ${config.invalidPaths.size} invalid field(s): " +
                         config.invalidPaths.take(6).joinToString(),
                 )
+            }
+            /* Staging runs after the profile is resolved: the module we ship now
+             * tracks the APatch release we target (11282 -> module 0.13.9), so
+             * the bundled asset is what gets staged and the loader choice only
+             * decides who inserts it (apd vs ksud). */
+            if (prepareKsud(workDir, onLog) != null) onLog("<k> ksud ready") else onLog("<k> warning: ksud not found")
+            if (prepareApd(workDir, onLog) != null) onLog("<k> libapd.so ready") else onLog("<k> warning: libapd.so not found")
+            if (prepareKpatch(workDir, onLog) != null) {
+                onLog("<k> kernelpatch.ko ready")
+            } else {
+                onLog("<k> warning: kernelpatch.ko not found")
             }
             var profileBlob = profileController.nativeDocument(config)
                 ?: error("profile is unavailable for $release")
@@ -1042,7 +1051,7 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
      * work too, but a stable work-dir copy keeps the script's probe order
      * identical to the proven my2 layout (work-dir first, then /data/app). */
     private fun prepareApd(workDir: File, onLog: (String) -> Unit): File? {
-        val appInfo = runCatching { appContext.packageManager.getApplicationInfo("me.bmax.apatch", 0) }.getOrNull()
+        val appInfo = runCatching { appContext.packageManager.getApplicationInfo(ApatchPackage, 0) }.getOrNull()
         if (appInfo == null) {
             onLog("<k> APatch app not installed")
             return null
@@ -1064,7 +1073,14 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
      * does not export 13 of the symbols kernelpatch.ko references, so the
      * module can only be loaded through apd's userspace kallsyms relocation
      * (never a plain insmod); apd insmod also leaves the SELinux policy
-     * untouched, unlike apd late-load. */
+     * untouched, unlike apd late-load.
+     *
+     * The bundled module is authoritative: it now carries upstream's
+     * android12-5.10 build from APatch 11282 (module 0.13.9, 183,056 B), which is
+     * the release we target. Reading the manager's own copy at runtime was the
+     * previous policy and it silently downgraded the pair: an APatch 11224 from
+     * 2023 ships 0.13.3, so "pick APatch" loaded a 2023 module no matter what we
+     * bundled. That copy stays as a last-resort fallback only. */
     private fun prepareKpatch(workDir: File, onLog: (String) -> Unit): File? {
         val release = System.getProperty("os.version", "").orEmpty()
         val assetName = "kernelpatch/android12-5.10_kernelpatch.ko"
@@ -1075,10 +1091,26 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
             return null
         }
         val output = File(workDir, "kernelpatch.ko")
-        return runCatching {
+        val bundled = runCatching {
             appContext.assets.open(assetName).use { input -> output.outputStream().use { input.copyTo(it) } }
-            output
+            output.length()
         }.onFailure { onLog("<k> copy kernelpatch.ko failed: ${it.message}") }.getOrNull()
+        if (bundled != null) {
+            onLog("<k> kernelpatch.ko: bundled module ($bundled B)")
+            return output
+        }
+        val managed = runCatching {
+            val res = appContext.packageManager.getResourcesForApplication(ApatchPackage)
+            res.assets.open("android12-5.10_kernelpatch.ko").use { input ->
+                output.outputStream().use { input.copyTo(it) }
+            }
+            output.length()
+        }.onFailure { onLog("<k> APatch module unavailable: ${it.message}") }.getOrNull()
+        if (managed != null) {
+            onLog("<k> kernelpatch.ko: manager-managed fallback ($managed B)")
+            return output
+        }
+        return null
     }
 
     private suspend fun runProcess(
