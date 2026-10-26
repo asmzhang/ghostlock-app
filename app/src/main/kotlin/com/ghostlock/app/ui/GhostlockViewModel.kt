@@ -821,6 +821,33 @@ class GhostlockViewModel(
         }
     }
 
+    /**
+     * Picks the binary that loads the module after uid 0 lands. The value is
+     * stored in the active profile (execution.handoff.module_loader) rather
+     * than in app preferences, so the exported profile reproduces the run.
+     * Only two values are offered: 0 KernelSU (default) and 1 APatch. The
+     * native side still reads a legacy 2 as "APatch first", and such a
+     * profile is displayed as APatch here, so the list never shows a load
+     * order it cannot reproduce.
+     */
+    fun selectModuleLoader(index: Int) {
+        val snapshot = kernelSnapshot ?: return
+        val pair = snapshot.cpuPairs.getOrNull(snapshot.selectedCpuPair) ?: return
+        val value = index.coerceIn(0, 1)
+        mutableState.update { it.copy(moduleLoaderIndex = value) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val config = runCatching {
+                profileController.updateGeneral(
+                    snapshot.kernelRelease,
+                    pair,
+                    mapOf("execution.handoff.module_loader" to value.toLong()),
+                )
+            }.getOrNull() ?: return@launch
+            applyExecutionConfig(config, preserveEditing = false)
+            applyAdvancedConfig(config, preserveEditing = false)
+        }
+    }
+
     fun toggleSafeMode(enabled: Boolean) {
         repository.setSafeModeEnabled(enabled)
         mutableState.update { it.copy(safeModeEnabled = enabled) }
@@ -1085,6 +1112,7 @@ class GhostlockViewModel(
                 kernelSupported = snapshot.kernelSupported,
                 cpuPairLabels = snapshot.cpuPairLabels,
                 cpuPairIndex = snapshot.selectedCpuPair,
+                moduleLoaderIndex = loaded?.moduleLoader?.let { if (it >= 1) 1 else 0 } ?: 0,
                 safeModeEnabled = snapshot.safeModeEnabled,
                 forceAttackTestEnabled = snapshot.forceAttackTest,
                 shizukuEnabled = snapshot.shizukuEnabled,

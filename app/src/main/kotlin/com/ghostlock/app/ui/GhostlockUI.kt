@@ -103,6 +103,8 @@ data class GhostlockUiState(
     val cpuPairIndex: Int = 0,
     /** CPU pair from the resolved profile when it differs from the device pick. */
     val customCpuPair: CpuPair? = null,
+    /** Module loader choice: 0 KernelSU (default), 1 APatch. */
+    val moduleLoaderIndex: Int = 0,
     val safeModeEnabled: Boolean = false,
     val forceAttackTestEnabled: Boolean = false,
     val tcpRouteEnabled: Boolean = true,
@@ -181,6 +183,7 @@ interface GhostlockActions {
     fun onParseOta()
     fun onParseImage()
     fun onCpuPairSelected(index: Int)
+    fun onModuleLoaderSelected(index: Int)
     fun onSafeModeChanged(enabled: Boolean)
     fun onForceAttackTestChanged(enabled: Boolean)
     fun onShizukuChanged(enabled: Boolean)
@@ -698,6 +701,25 @@ private fun ControlPanel(
                     onSelectedIndexChange = actions::onCpuPairSelected,
                 )
             }
+            /* Which manager loads the module sits here, before the run, because
+             * it changes what the exploit does at handoff - not something to
+             * discover afterwards in the editor.
+             * Exactly two choices: a third "automatic" entry used to say
+             * "APatch first" while the default said KernelSU, so the list
+             * contradicted itself. The fallback that made "automatic" look
+             * different is now inside both choices: each tries its own loader
+             * first and falls back to the other when it is not staged. */
+            OverlaySpinnerPreference(
+                title = stringResource(R.string.module_loader_label),
+                items = listOf(
+                    R.string.module_loader_kernelsu,
+                    R.string.module_loader_apatch,
+                ).map { DropdownItem(icon = null, title = stringResource(it)) },
+                selectedIndex = state.moduleLoaderIndex,
+                summary = null,
+                showValue = true,
+                onSelectedIndexChange = actions::onModuleLoaderSelected,
+            )
             SwitchPreference(
                 checked = state.safeModeEnabled,
                 onCheckedChange = actions::onSafeModeChanged,

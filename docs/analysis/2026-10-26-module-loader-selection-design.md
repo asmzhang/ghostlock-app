@@ -72,28 +72,35 @@ ActivityThread.main -> Looper.loop -> Handler.handleCallback -> ne.run -> oe.K
 
 ### 4.1 选择对象改为「模块来源」
 
-`execution.handoff.module_loader`，枚举 `auto | apatch | kernelsu`，默认 `auto`。
+`execution.handoff.module_loader`，u32，取值 `0 | 1`（`2` 为历史别名，见下），默认 `0`。
 
 | 取值 | 行为 |
 | --- | --- |
-| `apatch` | 用 `apd` 的 `insmod` 插入 **APatch app 自带**的 `assets/android12-5.10_kernelpatch.ko`；读不到才回落随包资产，并在日志与 UI 标注「随包模块，管理器可能不识别」 |
-| `kernelsu` | 走 `ksud late-load --kmi <kmi>`，由 KernelSU 自行匹配模块 |
-| `auto` | 按 4.2 的可用性顺序自动挑 |
+| `0` `kernelsu`（默认） | 先 `ksud late-load --kmi <kmi>`（KernelSU 自行匹配模块）；`ksud` 不可用时回退 `apd` |
+| `1` `apatch` | 先 `apd insmod`（模块来源见下）；`apd` 或模块不可用时回退 `ksud` |
+| `2`（历史别名） | 等价 `apatch` 的尝试顺序，仅为兼容旧 profile 保留，UI 不再提供 |
+
+> 定稿变更（2026-10-26，用户指示「root 管理器选择在 root 执行前，默认 KernelSU，可选
+> APatch」）：早期草案是 `auto | apatch | kernelsu` 三值、默认 `auto`。实施时发现三选一
+> 自相矛盾——列表第一项写「KernelSU（默认）」，第三项写「自动（优先 APatch）」，同一份
+> 列表里同时声明两种默认。既然两个选项本身已经各自「先试自己、再回退对方」，`auto` 不再
+> 提供任何独立语义，故收敛为两项。
 
 模块来源的解析放在 Kotlin（`AndroidGhostlockRepository.prepareKpatch`），因为只有它有
 `PackageManager`；native 只按已有约定读 `$HOME_DIR/kernelpatch.ko` 与 `$HOME_DIR/ksud`，
 脚本里的 loader 选择改为读 profile 字段，不再「APatch 永远赢」。
 
-### 4.2 auto 的判定顺序
+### 4.2 优先级与回退
 
-1. APatch 已装 **且** 能读到它自己的 ko → `apatch`；
-2. KernelSU 系（`me.weishu.kernelsu.pr` / `me.weishu.kernelsu` / `com.resukisu.resukisu` /
-   `com.kowx712.supermanager`）已装 → `kernelsu`；
-3. APatch 已装但读不到自带 ko → `apatch`（降级用随包模块，明确告警）；
-4. 都没有 → 不加载模块，只完成 W1/W2 拿到 uid 0（与今天行为一致）。
+两个选项都是「偏好 + 回退」，而不是硬锁：单管理器的设备不该因为选了另一个就彻底失败。
 
-第 1 条优先于第 2 条，是因为「模块与 app 匹配」比「哪个管理器更新」更决定可用性；
-第 3 条排最后，是因为它必然让管理器界面降级。
+1. 按偏好排序候选（`kernelsu` → `ksud apd`；`apatch` → `apd ksud`）；
+2. 依次检查候选是否可执行（`apd` 还要求有可用的 `kernelpatch.ko`），第一个满足的胜出；
+3. 两个都不可用则明确报错退出，不静默跳过；
+4. 脚本始终打印 `loader=<路径> pref=<取值>`，回退可见而不是静默。
+
+早期草案里「APatch 已装且能读自带 ko 优先于 KernelSU」的自动排序已取消：那正是造成
+APatch-only 设备上 ksud 抢先的判据缺口（2026-10-17 实测），现在由用户显式选择取代。
 
 ### 4.3 触点清单（实现时只碰这些）
 
@@ -111,21 +118,18 @@ ActivityThread.main -> Looper.loop -> Handler.handleCallback -> ne.run -> oe.K
 
 ### 4.4 UI
 
-执行页「执行」按钮上方一行：
+执行页（「执行」按钮上方）的常规设置卡里加一行，位置在「CPU 核心组」之后、
+「安全模式」之前——它必须先于 root 执行可见，不能藏在 profile 编辑器里：
 
 ```
-模块：APatch（app 自带）      >  选择
+root 管理器              KernelSU（默认）  ⌃⌄
 ```
 
-点进去是三选一（自动 / APatch / KernelSU），每个选项下标明当前可用性与后果，例如：
-
-- `APatch  可用（app 自带模块，界面正常）`
-- `APatch  降级（将使用随包模块，管理器界面可能无响应）`
-- `KernelSU v3.3.0  可用`
-- `自动  当前会选 APatch（app 自带模块）`
+点开是两项：`KernelSU（默认）` / `APatch`，当前项打勾。没有第三项，也没有「自动」。
 
 选择写入当前 profile 并随 profile 一起导出，不另建配置通道（AGENTS.md：配置权威是
-GLK1 profile + HOCON，执行层不读配置类环境变量）。
+GLK1 profile + HOCON，执行层不读配置类环境变量）。旧 profile 的 `2` 在 UI 里按 `APatch`
+显示，保存时写成 `1`，所以界面永远不会展示一个它复现不了的顺序。
 
 ### 4.5 明确不做
 
@@ -137,13 +141,39 @@ GLK1 profile + HOCON，执行层不读配置类环境变量）。
 
 | 项 | 判据 |
 | --- | --- |
-| `module_loader=apatch`（app 自带 ko） | root 成功；打开 APatch **无 ANR**，模块列表可见 |
-| `module_loader=kernelsu` | root 成功；打开 KernelSU 显示已激活 |
-| `module_loader=auto` | 按 4.2 选出预期项，日志打印来源 |
+| `module_loader=0`（默认） | root 成功后打开 **KernelSU** 无异常，显示已激活 |
+| `module_loader=1` | root 成功后打开 **APatch** 无 ANR，模块列表可见 |
+| 回退可见 | 指定 loader 不可用时日志出现 `loader=<另一个> pref=<取值>` |
 | 双侧一致性 | profile 二进制字段表与 Kotlin 键名逐字一致，测试通过 |
 | 回归 | `make -C src native-host-tests`、NDK 零告警、`TIDY_STATUS=0` |
 | 攻击路径 | `cmp_disasm` 对 8 个攻击函数 PASS（本改动不碰攻击函数，预期仅 LAYOUT-SHIFT） |
 | 真机 | 每形态各 3 轮冷机，记录开关管理器后的表现 |
+
+## 5.1 实施记录（2026-10-26 16:5x）
+
+已落地，触点与草案 4.3 的差异只有两处：字段按 u32 存（不是 C++ 枚举），Kotlin 侧不新增
+`entries()/apply()/from()`，直接复用既有的 `updateGeneral` 写 `execution.handoff.module_loader`。
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/core/profile/model.h` | `Execution` 增 `uint32_t handoff_module_loader;` + 访问器宏一行 |
+| `src/core/profile/binary.cpp` | `kExecHandoff` 增 `PLAIN("module_loader", execution.handoff_module_loader)` |
+| `src/core/attack/ops.cpp` | 脚本头增 `LOADER_PREF=%u`；loader 选择改为「按偏好排序候选 + 首个可用胜出 + 打印 pref」 |
+| `app/src/main/kotlin/com/ghostlock/app/domain/model/GhostlockModels.kt` | `ProfileConfig` 增 `moduleLoader`（刻意不放进 `GeneralPaths`，只留一个编辑入口） |
+| `app/src/main/kotlin/com/ghostlock/app/data/AndroidProfileConfigController.kt` | `load()` 读 `handoff.module_loader` 填进 `ProfileConfig` |
+| `app/src/main/kotlin/com/ghostlock/app/ui/GhostlockUI.kt` | 状态字段 + 执行页 `OverlaySpinnerPreference` 两项 |
+| `app/src/main/kotlin/com/ghostlock/app/ui/GhostlockViewModel.kt` | `selectModuleLoader()` 经 `updateGeneral` 写 profile；刷新时 `>=1` 一律显示为 APatch |
+| `app/src/main/kotlin/com/ghostlock/app/ui/MainActivity.kt` | 动作转发 |
+| `app/src/main/res/values*/strings.xml` | `module_loader_label` / `_kernelsu` / `_apatch`（中英各一套） |
+
+已验证：native 重建零告警；`cmp_disasm` 对 8 个攻击函数 **PASS**（`owner_thread` IDENTICAL，
+其余仅地址操作数位移）；主机单测 28/28；`clang-tidy` 全量 `TIDY_STATUS=0`；装机后 UI 两项、
+默认 `KernelSU（默认）`，切到 `APatch` 再切回，设备上解析后的 profile 出现
+`handoff { module_loader = 0 }`，UI 与落盘值一致。
+
+尚未验证：**真机 root 后打开管理器的表现**（当前设备 Enforcing 无 root，需先复现一次
+HIT-ROOT + APatch 链路）。这是下一批的唯一待验项，也是 §5 表里两行的最终判据。
+
 
 ## 6 风险
 

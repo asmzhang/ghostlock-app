@@ -32,6 +32,7 @@ namespace ghostlock::profile {
         uint32_t handoff_pre_dispatch_settle_ms, handoff_module_poll_attempts;
         uint32_t handoff_module_poll_interval_ms, handoff_enforce_poll_attempts;
         uint32_t handoff_enforce_poll_interval_ms;
+        uint32_t handoff_module_loader;
     };
 
 
@@ -271,6 +272,10 @@ namespace ghostlock::profile {
         GHOSTLOCK_EXEC_U32(handoff_module_poll_interval_ms)
         GHOSTLOCK_EXEC_U32(handoff_enforce_poll_attempts)
         GHOSTLOCK_EXEC_U32(handoff_enforce_poll_interval_ms)
+        /* Which binary loads the module after uid 0 lands: 0 ksud (default),
+         * 1 apd, 2 legacy apd-first. Absent reads as 0, so a profile that
+         * predates this key keeps the KernelSU-first order. */
+        GHOSTLOCK_EXEC_U32(handoff_module_loader)
 #undef GHOSTLOCK_EXEC_U32
 
         [[nodiscard]] bool has_compact_waiter() const noexcept {

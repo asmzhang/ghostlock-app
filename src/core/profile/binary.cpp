@@ -160,6 +160,7 @@ namespace ghostlock::binary_profile {
                   execution.handoff_enforce_poll_attempts),
             PLAIN("enforce_poll_interval_ms",
                   execution.handoff_enforce_poll_interval_ms),
+            PLAIN("module_loader", execution.handoff_module_loader),
         };
 
         constexpr Field kExecConsumer[] = {

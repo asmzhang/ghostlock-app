@@ -81,6 +81,13 @@ data class ProfileConfig(
     val fallbackTo: String? = null,
     /** Dotted paths whose resolved value violates the geometry rules. */
     val invalidPaths: Set<String> = emptySet(),
+    /**
+     * Which binary loads the module once uid 0 lands:
+     * 0 KernelSU (ksud, default), 1 APatch (apd), 2 legacy APatch-first.
+     * Kept out of [GeneralPaths] so the manager choice has exactly one
+     * editing surface (the run screen), not two.
+     */
+    val moduleLoader: Int = 0,
 ) {
     companion object {
         /** Routes a profile may declare ("" is the inference fallback). */

@@ -77,6 +77,8 @@ internal class AndroidProfileConfigController(
             route = route,
             fallbackTo = fallbackTo,
             invalidPaths = invalidPaths,
+            moduleLoader = full["execution"].asValueMap()
+                ?.getLongAt("handoff.module_loader")?.toInt() ?: 0,
         )
     }
 
