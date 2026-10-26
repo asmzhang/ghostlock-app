@@ -138,6 +138,66 @@ adb shell "su -c id -Z"                              # u:r:magisk:s0
 adb shell getenforce                                 # Permissive
 ```
 
+## 9 root 管理器选择与 APatch 管理器卡顿
+
+### 选择器（提交 79d6275 / 340409c）
+
+profile `execution.module_loader`：`0` = KernelSU（默认）/ `1` = APatch。选择行放在「执行」按钮上方，
+判定发生在 root 执行之前；native 只按 profile 选，不做运行时嗅探。改动前 Kotlin 只要发现随包带着
+`kernelpatch.ko` 就把加载器切成 `apd`，等于永远是 APatch；现在由字段决定，KernelSU 缺 `ksud` 时回落
+APatch 并把原因写进日志。
+
+随包模块换成 `kernelpatch 0.13.9`（183,056 B，sha256 `67aa601c…`），与设备上的 APatch `11282` 对齐；
+原来跟的 0.13.8（183,312 B）会让管理器在内核模块与 app 之间看到版本不一致。
+
+### APatch 管理器卡顿：定性
+
+现象：点开 APatch 约 20 秒不出界面，随后弹「APatch没有响应」。
+
+`/data/anr/anr_2026-10-26-17-38-33-246` 与 `…-17-41-30-029` 两份 trace 是同一个形状：
+
+- 主线程 `TimedWaiting`，栈顶 `Unsafe.park ← LockSupport.parkNanos ← FutureTask.awaitDone ←
+  FutureTask.get ← rn2.<init> ← ws.a ← u63.l ← r1.<clinit>`，即**类静态初始化里等一次 shell 握手**；
+- 它下面挂着 3 个 `/system/bin/sh` 子进程（`cmdline` 为空），全部停在 `pipe_read` 等输入；
+- `process reaper` 线程停在 `wait4`，线程池线程停在子进程 stdout 的 `read`。
+
+结论：管理器启动时用 root shell 探测环境，命令写不进去、输出读不回来，每条探测只能等超时，
+主线程被拖过 5 秒宽限就 ANR。内核模块与 app 版本不匹配时，这次探测必然失败。
+
+### 处理与验证
+
+把内核模块换成 0.13.9 并重新 root 后：
+
+| 项 | 结果 |
+| --- | --- |
+| `/sys/module/kernelpatch/version` | `0.13.9` |
+| `su -c 'id -u'` | `0` |
+| `getenforce` | `Permissive` |
+| 管理器启动到主页 | 4 秒（此前 ~20 秒后 ANR） |
+| 主页 / 超级用户 / 模块 / 设置 | 各约 3 秒出内容 |
+| `/data/anr` 计数 | 停在 13（全是 17:38–17:41 的旧文件），之后无新增 |
+
+同时排除两个误判：设备本身不慢（`loadavg` 0.63 / 0.79 / 0.71，93% idle），也不是 GhostLock 残留
+（只有一个 `com.ghostlock.app` 前台进程）。
+
+### 已知小毛病
+
+`su -c 'id'`（不带 `-u`）会打印 `id: gid 391986944: No such file or directory`：sucompat 传下来的组号
+在 `/system/etc/group` 里查不到名字，属显示问题。`su -c 'id -u'` 返回 `0`、`su -c whoami` 返回 `root`，
+提权不受影响；判定 root 用 `id -u` 或 `whoami`，不要用裸 `id`。
+
+越狱（Live）模式下管理器顶部显示「越狱模式 / 该模式下不允许修补」，是该模式的预期状态。
+
+### 本批门禁
+
+| 项 | 结果 |
+| --- | --- |
+| NDK 构建 | 2,794,976 B，零告警 |
+| `cmp_disasm` vs `build\ghostlock-preloader.bin` | PASS：`owner_thread` IDENTICAL，其余 6 个攻击函数仅 LAYOUT-SHIFT（`prepare_good_kernel_page` 2116 条不变），multicast 2 个 SKIP |
+| 主机单测 | 27/27 PASS（`tcp_zerocopy_route_test` 因 arm64 内联汇编在 x86 编不过，既有问题） |
+| clang-tidy | 见 §7 同法，全量 0 findings |
+| APK | `GhostLock-v1.2(609)` 装机，选择器两项、执行按钮固定在底部 |
+
 ## 附录 A 口径说明：本报告所有数字都是「无 app 内自动重试」
 
 发布版 APK 不含 app 内自动重试层。2026-10-23 曾实现过一版
