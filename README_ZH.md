@@ -18,7 +18,7 @@
 
 打开 **GhostLock** 点击 **执行**。需先装 KernelSU（`me.weishu.kernelsu`）、ReSukiSU（`com.resukisu.resukisu`）或 KowSU（`com.kowx712.supermanager`）以提供 `ksud`；缺 `ksud` 时 W1/W2 仍可拿到 uid 0，但不会加载模块。
 
-**root 管理器界面可能滞后于实际状态。** 攻击链只负责把 `kernelpatch.ko` 插进内核；APatch / KernelSU 管理器通常要重启一次框架（soft-reboot，内核不重启）才会把状态刷新成「已激活」。App 不代做这一步，也不会自动跳转管理器。此时 `su` 已经可用 —— `su -c id -u` 返回 0、`su -c id -Z` 返回 `u:r:magisk:s0` —— 可以先用，之后重启框架再打开管理器确认即可。
+**root 管理器界面可能滞后于实际状态。** KernelSU 路线上攻击链只负责把模块插进内核，管理器通常要重启一次框架（soft-reboot，内核不重启）才会把状态刷新成「已激活」；App 不代做这一步，也不会自动跳转管理器。APatch 路线在 `insmod` 之后还会补跑 APatch 自己的开机阶段（`post-fs-data`、`services`、`boot-completed`），常驻的 `apd` 守护进程因此存在，管理器无需重启框架即可正常渲染。此时 `su` 已经可用 —— `su -c id -u` 返回 0、`su -c id -Z` 返回 `u:r:magisk:s0` —— 可以先用，之后重启框架再打开管理器确认即可。
 
 执行链由三类组件构成：frontend（`root_child` 启动/交接）、backend（CVE-2026-43499 futex 原语）与 middleware 路线。**编目组合在构建期实例化，具体运行哪一个由解析后的 profile 选择**。路线是双核竞争：6.6/6.12 树形 waiter 内核上主线程跑 `select` 爆破、consumer 线程扰动 waiter 优先级；6.1 紧凑 waiter 内核上主线程改走 `getsockopt(TCP_ZEROCOPY_RECEIVE)` 打洞页写入；5.15 内核走 multicast waiter 路线。CPU 对同样由解析后的 profile 决定。
 
