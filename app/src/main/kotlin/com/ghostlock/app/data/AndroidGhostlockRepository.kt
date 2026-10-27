@@ -606,7 +606,7 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
              * tracks the APatch release we target (11282 -> module 0.13.9), so
              * the bundled asset is what gets staged and the loader choice only
              * decides who inserts it (apd vs ksud). */
-            if (prepareKsud(workDir, onLog) != null) onLog("<k> ksud ready") else onLog("<k> warning: ksud not found")
+            if (prepareKsud(workDir, onLog) == null) onLog("<k> warning: ksud not found")
             if (prepareApd(workDir, onLog) != null) onLog("<k> libapd.so ready") else onLog("<k> warning: libapd.so not found")
             if (prepareKpatch(workDir, onLog) != null) {
                 onLog("<k> kernelpatch.ko ready")
@@ -1027,22 +1027,26 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
     private fun firstValidProperty(vararg keys: String): String? = keys.asSequence().firstNotNullOfOrNull { validDeviceName(systemProperty(it)) }
 
     private fun prepareKsud(workDir: File, onLog: (String) -> Unit): File? {
-        val packages = listOf("me.weishu.kernelsu.pr", "me.weishu.kernelsu", "com.resukisu.resukisu", "com.kowx712.supermanager")
-        var installed = false
-        for (packageName in packages) {
-            val appInfo = runCatching { appContext.packageManager.getApplicationInfo(packageName, 0) }.getOrNull() ?: continue
-            installed = true
-            val source = File(appInfo.nativeLibraryDir, "libksud.so")
-            if (!source.isFile) continue
-            val output = File(workDir, "ksud")
-            runCatching {
-                source.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
-                runCatching { Os.chmod(output.absolutePath, 448) }
-                return output
-            }.onFailure { onLog("<k> copy ksud failed: ${it.message}") }
+        val candidates = ManagerScanner.scan(appContext.packageManager, appContext.packageName)
+        val chosen = ManagerScanner.pick(candidates)
+        if (chosen == null) {
+            onLog("<k> ksud not staged: ${ManagerScanner.describe(candidates)}")
+            return null
         }
-        if (!installed) onLog("<k> KernelSU/ReSukiSU/KowSU app not installed")
-        return null
+        val appInfo = runCatching {
+            appContext.packageManager.getApplicationInfo(chosen.packageName, 0)
+        }.getOrNull() ?: return null
+        val source = File(appInfo.nativeLibraryDir, ManagerScanner.KsudLibraryName)
+        val output = File(workDir, "ksud")
+        val copied = runCatching {
+            source.inputStream().use { input -> output.outputStream().use { input.copyTo(it) } }
+            runCatching { Os.chmod(output.absolutePath, 448) }
+            output
+        }.onFailure { onLog("<k> copy ksud failed: ${it.message}") }.getOrNull()
+        /* Name the package: "first installed" used to be silent, so a wrong pick
+         * only showed up later as a kernelpatch/ksud mismatch. */
+        if (copied != null) onLog("<k> ksud ready: ${chosen.packageName} (${chosen.label})")
+        return copied
     }
 
     /* Stage the APatch daemon (libapd.so) next to ksud so the root script can
