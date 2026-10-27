@@ -3,7 +3,7 @@
 - 状态：已实现并通过门禁，真机结果见 `docs/analysis/2026-10-27-apatch-kpm-gate.md`
 - 日期：2026-10-27
 - 级别：L（跨 native 脚本 ↔ 设备端 daemon 生命周期；影响 handoff 契约与文档）
-- 分支：`p6-multicast-2026-10-21`（当前工作树）
+- 分支：`marble-closeout-2026-10-25`
 
 ## 0 结论摘要
 
