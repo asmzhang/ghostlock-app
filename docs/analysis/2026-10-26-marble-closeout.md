@@ -234,8 +234,43 @@ API level 与 Android 版本号不能直接比较（SDK 33 = Android 13，而 KM
 | `cmp_disasm` vs `build\ghostlock-preloader.bin` | PASS：`owner_thread` IDENTICAL，其余 6 个攻击函数仅 LAYOUT-SHIFT（`prepare_good_kernel_page` 2116 条不变），multicast 2 个 SKIP |
 | 主机单测 | 27/27 PASS（`tcp_zerocopy_route_test` 因 arm64 内联汇编在 x86 编不过，既有问题） |
 | Kotlin 单测 | `KernelPatchKmiTest` 5/5 PASS（`gradlew :app:testDebugUnitTest --tests '*KernelPatchKmiTest*'`） |
+| Kotlin 全量单测 | 18 suites / 85 tests，0 failures（见下方「两个长期红灯的处置」） |
 | clang-tidy | 见 §7 同法，全量 0 findings |
 | APK | `GhostLock-v1.2(612)` 装机：包内 7 个 KMI 模块齐备，执行按钮仍固定底部 |
+
+#### 两个长期红灯的处置（提交 `f11ad78` / `7a0ba4a`）
+
+跑全量 `:app:testDebugUnitTest` 时暴露的两个红点都不是本批引入，但都落在门禁里，必须给结论。
+
+**`NativeDocumentEquivalenceTest`：golden 过期（本次修复）**
+
+`app/src/test/resources/native-doc-golden.sha256` 最后写于 2026-09-27，之后有两件事改动了它锁定的字节流：
+
+1. `79d6275`（2026-10-26）加了 `execution.handoff_module_loader`。该字段在
+   `src/core/profile/binary.cpp:163` 以 `PLAIN("module_loader", …)` 注册进共享的
+   `execution.handoff` 段（`kExecHandoff`，第 152–164 行，段表在 209 行），对每份 profile
+   无条件序列化 ⇒ 51 条哈希全部漂移；
+2. 冻结之后有 13 个 builtin 进入 `app/src/main/assets/kernel_profiles/index.conf`，golden 里
+   根本没有对应行 ⇒ 51 行变 64 行。
+
+重算方式：临时 harness 走与测试完全相同的路径（`AndroidProfileConfigController.load` +
+`nativeDocument`，`CpuPair(0, 1)`）打印 `release sha256`，替换 golden 后删除 harness。
+复跑 `NativeDocumentEquivalenceTest` = 1 test / 0 failures / 64 profiles。此提交之后 golden
+重新成为有效的回归锁。
+
+**`ProfileMigrationEquivalenceTest`：三个 builtin 没有 v1 来源（本次显式列出）**
+
+该测试断言「冻结的 remote-main 6.x fixture 覆盖每一个当前 6.x builtin」。三个 release 在快照
+之后才进 `index.conf`，因此没有 v1 `offsets.json` 可导入：
+
+- `6.1.25-android14-11-maybe-dirty`（本地开发内核，从未出现在 v1）
+- `6.1.145-android14-11-g9b69cc399ae1-ab14819715`
+- `6.6.89-android15-8-g5a0ffb447c1d-ab13771415-4k`
+
+从 v2 profile 反推一份 v1 条目是可行的，但那会让往返比较变成「自己和自己比」，等于把断言变成
+同义反复，所以没有这么做。改为在测试里列 `knownUncovered`，并且**额外断言它始终是 builtin 集合
+的子集**——任何一条从 `index.conf` 消失时测试会立刻变红，白名单不会静默腐烂。覆盖断言本身也从
+集合相等改成报对称差（`missing=` / `stale=`），下次出问题能直接看到是哪一条。
 
 ## 10 为什么单次成功率停在 ~91–95%（决定不再优化）
 
