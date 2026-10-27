@@ -188,6 +188,44 @@ APatch 并把原因写进日志。
 
 越狱（Live）模式下管理器顶部显示「越狱模式 / 该模式下不允许修补」，是该模式的预期状态。
 
+### 跨内核：KMI 矩阵与选择规则
+
+原来 `prepareKpatch` 把 KMI 写死成 `android12-5.10`（一个 asset 名 + 两句 `contains` 判断），
+非该 KMI 的设备选 APatch 会静默回落到 KernelSU。现已改为按 KMI 取模块：7 个 KMI 全部随包
+（均取自 APatch 11282，模块 0.13.9）。
+
+| KMI | 打包大小 |
+| --- | --- |
+| `android12-5.10` | 183,056 B |
+| `android13-5.10` | 178,648 B |
+| `android13-5.15` | 196,720 B |
+| `android14-5.15` | 227,208 B |
+| `android14-6.1` | 195,944 B |
+| `android15-6.6` | 172,120 B |
+| `android16-6.12` | 188,152 B |
+
+`libapd.so` 是 userspace、运行时做 kallsyms 重定位，跨 KMI 通用，不随 KMI 变化。
+
+**选择规则**（`AndroidGhostlockRepository.kt` 的 `kernelPatchKmi()`）：KMI 指内核所属的 GKI
+分支，不是手机今天跑的 Android 版本——5.10 有 `android12-5.10` 与 `android13-5.10` 两条分支，
+两个模块不可互换。所以：
+
+1. 优先取 `uname -r` 里内嵌的分支标记（`5.10.157-android13-4-…` → `android13-5.10`）；
+2. 内核不带标记时，取同一 `major.minor` 下、分支号不超过当前 Android 版本的最新一条
+   （6.1 内核跑在 Android 15 上仍是 `android14-6.1`，因为分支早于该版本）；
+3. 都对不上就返回 null，调用方跳过装载，loader 选择回落 KernelSU——**宁可回落，不要装错**，
+   错 KMI 会在 vermagic 检查处失败。
+
+API level 与 Android 版本号不能直接比较（SDK 33 = Android 13，而 KMI 写的是 `android13`），
+映射由 `androidReleaseOf()` 负责。规则由 `app/src/test/kotlin/com/ghostlock/app/data/KernelPatchKmiTest.kt`
+的 5 个用例覆盖（marble 实机、Pixel 6 同 minor 换分支、带标记优先于 SDK、无标记回落、未知内核返 null）。
+
+**真机验证（marble，2026-10-27 10:45 轮）**：日志依次为
+`libapd.so ready` → `kernelpatch.ko: kmi android12-5.10` → `bundled module android12-5.10 (183056 B)`
+→ `apd insmod kmi=android12-5.10` → `Loaded kernel module` → `KernelSU ready`；
+随后 `/sys/module/kernelpatch/version` = `0.13.9`、`su -c 'id -u'` = `0`、`getenforce` = `Permissive`。
+即选择、取模块、装载、提权四步在新代码下都成立。
+
 ### 本批门禁
 
 | 项 | 结果 |
@@ -195,8 +233,9 @@ APatch 并把原因写进日志。
 | NDK 构建 | 2,794,976 B，零告警 |
 | `cmp_disasm` vs `build\ghostlock-preloader.bin` | PASS：`owner_thread` IDENTICAL，其余 6 个攻击函数仅 LAYOUT-SHIFT（`prepare_good_kernel_page` 2116 条不变），multicast 2 个 SKIP |
 | 主机单测 | 27/27 PASS（`tcp_zerocopy_route_test` 因 arm64 内联汇编在 x86 编不过，既有问题） |
+| Kotlin 单测 | `KernelPatchKmiTest` 5/5 PASS（`gradlew :app:testDebugUnitTest --tests '*KernelPatchKmiTest*'`） |
 | clang-tidy | 见 §7 同法，全量 0 findings |
-| APK | `GhostLock-v1.2(609)` 装机，选择器两项、执行按钮固定在底部 |
+| APK | `GhostLock-v1.2(612)` 装机：包内 7 个 KMI 模块齐备，执行按钮仍固定底部 |
 
 ## 10 为什么单次成功率停在 ~91–95%（决定不再优化）
 

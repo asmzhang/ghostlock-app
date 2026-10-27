@@ -1075,39 +1075,48 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
      * (never a plain insmod); apd insmod also leaves the SELinux policy
      * untouched, unlike apd late-load.
      *
-     * The bundled module is authoritative: it now carries upstream's
-     * android12-5.10 build from APatch 11282 (module 0.13.9, 183,056 B), which is
-     * the release we target. Reading the manager's own copy at runtime was the
-     * previous policy and it silently downgraded the pair: an APatch 11224 from
-     * 2023 ships 0.13.3, so "pick APatch" loaded a 2023 module no matter what we
-     * bundled. That copy stays as a last-resort fallback only. */
+     * The bundled modules are authoritative: all seven KMIs now ship upstream's
+     * 0.13.9 builds from APatch 11282, so "pick APatch" no longer depends on
+     * whichever manager the user happens to have installed (an APatch 11224
+     * from 2023 ships 0.13.3 and silently downgraded the pair). The manager's
+     * own copy stays as a last-resort fallback only. */
     private fun prepareKpatch(workDir: File, onLog: (String) -> Unit): File? {
         val release = System.getProperty("os.version", "").orEmpty()
-        val assetName = "kernelpatch/android12-5.10_kernelpatch.ko"
-        /* marble's os.version is '5.10.149-android12-9-...' — the 5.10 comes
-         * first, so only the bare '5.10.' substring is guaranteed. */
-        if (!release.contains("android12") || !release.contains("5.10.")) {
-            onLog("<k> kernelpatch.ko: release $release is not android12-5.10; skipping")
+        val bundledKmis = runCatching {
+            appContext.assets.list(KernelPatchAssetDir).orEmpty()
+                .map { it.removeSuffix(KernelPatchAssetSuffix) }
+                .filter { it.startsWith("android") }
+                .toSet()
+        }.getOrElse {
+            onLog("<k> kernelpatch.ko: cannot list bundled modules: ${it.message}")
+            emptySet()
+        }
+        val kmi = kernelPatchKmi(release, Build.VERSION.SDK_INT, bundledKmis)
+        if (kmi == null) {
+            onLog("<k> kernelpatch.ko: no bundled module for release $release (sdk ${Build.VERSION.SDK_INT})")
             return null
         }
+        onLog("<k> kernelpatch.ko: kmi $kmi")
         val output = File(workDir, "kernelpatch.ko")
         val bundled = runCatching {
-            appContext.assets.open(assetName).use { input -> output.outputStream().use { input.copyTo(it) } }
+            appContext.assets.open("$KernelPatchAssetDir/$kmi$KernelPatchAssetSuffix").use { input ->
+                output.outputStream().use { input.copyTo(it) }
+            }
             output.length()
         }.onFailure { onLog("<k> copy kernelpatch.ko failed: ${it.message}") }.getOrNull()
         if (bundled != null) {
-            onLog("<k> kernelpatch.ko: bundled module ($bundled B)")
+            onLog("<k> kernelpatch.ko: bundled module $kmi ($bundled B)")
             return output
         }
         val managed = runCatching {
             val res = appContext.packageManager.getResourcesForApplication(ApatchPackage)
-            res.assets.open("android12-5.10_kernelpatch.ko").use { input ->
+            res.assets.open("$kmi$KernelPatchAssetSuffix").use { input ->
                 output.outputStream().use { input.copyTo(it) }
             }
             output.length()
         }.onFailure { onLog("<k> APatch module unavailable: ${it.message}") }.getOrNull()
         if (managed != null) {
-            onLog("<k> kernelpatch.ko: manager-managed fallback ($managed B)")
+            onLog("<k> kernelpatch.ko: manager-managed fallback $kmi ($managed B)")
             return output
         }
         return null
@@ -1210,4 +1219,50 @@ class AndroidGhostlockRepository(context: Context) : GhostlockRepository {
 
     private val processes = mutableSetOf<Process>()
 
+}
+
+private const val KernelPatchAssetDir = "kernelpatch"
+private const val KernelPatchAssetSuffix = "_kernelpatch.ko"
+
+/* Pick the KernelPatch module key for this device. APatch ships exactly one
+ * kernelpatch.ko per KMI ("android<SDK>-<major>.<minor>") and a wrong pick dies
+ * on the module's vermagic check, so the key has to match the shipped set
+ * verbatim rather than be derived and hoped for.
+ *
+ * The KMI is the GKI branch the kernel was built from, not the Android release
+ * the phone runs today: a 5.10 kernel is android12-5.10 or android13-5.10 and
+ * the two modules are not interchangeable. GKI releases therefore embed the
+ * branch in uname -r ('5.10.157-android13-4-...') and that marker wins. When a
+ * vendor kernel drops the marker we fall back to the newest bundled branch for
+ * the same major.minor that is not newer than the running Android release (a 6.1
+ * kernel on Android 15 is still android14-6.1: the branch predates the release).
+ * Returning null means "no module for this kernel": the caller skips staging and
+ * loader selection falls back to KernelSU instead of failing the run. */
+internal fun kernelPatchKmi(release: String, sdkInt: Int, available: Set<String>): String? {
+    val version = Regex("^(\\d+)\\.(\\d+)").find(release.trim()) ?: return null
+    val suffix = "-${version.groupValues[1]}.${version.groupValues[2]}"
+    val branches = available.mapNotNull { key ->
+        if (!key.endsWith(suffix)) return@mapNotNull null
+        key.removeSuffix(suffix).removePrefix("android").toIntOrNull()?.let { it to key }
+    }
+    if (branches.isEmpty()) return null
+    val embedded = Regex("android(\\d+)").find(release)?.groupValues?.get(1)?.toIntOrNull()
+    if (embedded != null) {
+        branches.firstOrNull { it.first == embedded }?.let { return it.second }
+    }
+    val running = androidReleaseOf(sdkInt)
+    val newestRunning = branches.filter { it.first <= running }.maxByOrNull { it.first }
+    if (newestRunning != null) return newestRunning.second
+    return branches.minByOrNull { it.first }?.second
+}
+
+/* API level -> Android release number. The two must not be compared directly:
+ * SDK 33 is Android 13, and the KMI key says "android13", not "android33". */
+private fun androidReleaseOf(sdkInt: Int): Int = when (sdkInt) {
+    31, 32 -> 12
+    33 -> 13
+    34 -> 14
+    35 -> 15
+    36 -> 16
+    else -> sdkInt - 19
 }
