@@ -322,3 +322,37 @@ API level 与 Android 版本号不能直接比较（SDK 33 = Android 13，而 KM
 
 「没点着」那一次是 PC 脚本的定位问题（锁屏遮罩或对话框挡住按钮），
 人工目视点击不会出现，所以人工单次成功率应略高于 91.4%。
+
+## 附录 B `ksud` 来源的选择（提交 `95d556c`）
+
+**问题**：KernelSU 系的管理器不止一个（KernelSU、其 `pr` 构建、ReSukiSU、BakaSU、
+SuperManager），都叫 `libksud.so`。原实现按硬编码四包顺序取“第一个存在的”，装了多个管理器时
+可能取到**不是**当前驱动内核的那个，而且失败是静默的——脚本照常跑，只是二进制不对。
+
+**做法**：`ManagerScanner`（`app/src/main/kotlin/com/ghostlock/app/data/ManagerScanner.kt`）
+把这件事变成显式决策：
+
+- `BUILTIN` 保存优先级顺序，含 `org.bakasu.bakasu`；
+- `scan()` 报告每个已装候选的 label 与是否真的带 `libksud.so`；
+- `pick()` 返回按内置顺序第一个真正带二进制的候选；
+- `describe()` 在选不出时说明原因，替代原来的裸 “not installed”。
+
+**发现范围刻意只到 `BUILTIN`**：manifest 用 `<queries>` 声明这几个包，而不是申请
+`QUERY_ALL_PACKAGES`，所以全量 `getInstalledPackages` 扫描看到的还是同一批包，却要多要一个
+权限。`bakasu` 已同步加进 `<queries>`。要支持新管理器，两处都要加。
+
+**没有改 native**：app 本来就决定哪个二进制落到 `$HOME_DIR/ksud`，脚本侧不需要新参数。
+成功行改为带包名，正是这一行能暴露旧的静默误选。
+
+**真机验证**（marble，run `20261027-112334`，冷机 up 491 s，一次命中）：
+
+```
+<k> ksud ready: me.weishu.kernelsu (KernelSU)
+<k> libapd.so ready
+<k> kernelpatch.ko: kmi android12-5.10
+<k> kernelpatch.ko: bundled module android12-5.10 (183056 B)
+```
+
+收尾核对：`route_done status=0` 四条、`KernelSU module loaded` 两条、`getenforce` = Permissive、
+`su -c 'id -u'` = 0。单元测试 `ManagerScannerTest` 6/6；全量 `:app:testDebugUnitTest`
+19 suites / 91 tests，0 failures。
