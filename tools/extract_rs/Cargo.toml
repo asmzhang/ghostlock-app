@@ -10,6 +10,16 @@ license = "Apache-2.0"
 name = "ghostlock-extract"
 path = "src/main.rs"
 
+# 离线符号导出：反汇编前定位函数地址（CVE 判定脚本依赖它）。
+[[bin]]
+name = "syms"
+path = "src/bin/syms.rs"
+
+# 结构体字段偏移导出（BTF 驱动），供跨原语复用。
+[[bin]]
+name = "offsets"
+path = "src/bin/offsets.rs"
+
 [dependencies]
 anyhow = "1"
 thiserror = "2"
