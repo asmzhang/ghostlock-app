@@ -73,7 +73,9 @@ namespace ghostlock::memory {
         }
         *this = ResolvedAddresses{};
         soc = family;
-        const auto image = target::KernelAddress<target::ImageAddressDomain>(kernel::KIMAGE_TEXT_BASE)
+        identity_alias =
+                target::address::kImageTextBaseRuntime != kernel::KIMAGE_TEXT_BASE;
+        const auto image = target::KernelAddress<target::ImageAddressDomain>(target::address::kImageTextBaseRuntime)
                 .checked_add(values->offsets.init_cred);
         if (!image) {
             errno = ERANGE;
@@ -91,7 +93,7 @@ namespace ghostlock::memory {
         } else if (soc == SocFamily::Mtk || soc == SocFamily::Google) {
             /* Tensor G4/G5 (zumapro) loads the Image at the DRAM base like MTK. */
             kernel_phys_load = target::KernelAddress<target::PhysicalAddressDomain>(
-                kernel::KIMAGE_TEXT_BASE - kernel::MTK_VADDR_BASE);
+                target::address::kImageTextBaseRuntime - kernel::MTK_VADDR_BASE);
         } else if (soc == SocFamily::Xring) {
             kernel_phys_load = target::KernelAddress<target::PhysicalAddressDomain>(
                 kernel::XRING_KERNEL_PHYS_LOAD);
@@ -119,6 +121,10 @@ namespace ghostlock::memory {
     ResolvedAddresses::data_alias_checked(
         target::KernelAddress<target::ImageAddressDomain> image_address) const noexcept {
         const uintptr_t image = image_address.value();
+        if (identity_alias) {
+            if (image < target::address::kImageTextBaseRuntime) return std::nullopt;
+            return target::KernelAddress<target::DirectMapAddressDomain>(image);
+        }
         if (image < kernel::KIMAGE_TEXT_BASE) return std::nullopt;
         const uintptr_t offset = image - kernel::KIMAGE_TEXT_BASE;
         const auto physical = kernel_phys_load.checked_add(offset);

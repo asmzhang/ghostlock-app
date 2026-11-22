@@ -11,6 +11,8 @@ pub const ANDROID_MAGIC: &[u8; 8] = b"ANDROID!";
 pub const BTF_MAGIC: u16 = 0xEB9F;
 pub const PAGE_SIZE: usize = 4096;
 pub const LZ4_LEGACY_MAGIC: &[u8; 4] = b"\x02\x21\x4c\x18";
+/// 标准 LZ4 frame 头（magic 0x184D2204）：Android 4.x/5.x 内核常用此格式压缩。
+pub const LZ4_FRAME_MAGIC: &[u8; 4] = b"\x04\x22\x4d\x18";
 pub const LZ4_MAX_IMAGE: usize = 0x1000_0000; // 256 MiB decompressed arm64 Image bound
 
 // _text VA encodes the MTK DRAM base (text_offset=0); derive phys from
@@ -27,6 +29,22 @@ pub fn decompress_lz4_legacy(payload: &[u8]) -> Result<Vec<u8>> {
     if out.len() < 0x3C || &out[0..2] != b"MZ" || &out[0x38..0x3C] != b"ARM\x64" {
         return Err(ExtractError::new(
             "LZ4 decompression did not yield an arm64 Image",
+        ));
+    }
+    Ok(out)
+}
+
+/// 标准 LZ4 frame 解压（Android boot v0/v2 内核常见）。要求结果是一张 arm64 Image。
+fn decompress_lz4_frame(payload: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut decoder = lz4_flex::frame::FrameDecoder::new(payload);
+    let mut out = Vec::new();
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|err| ExtractError::new(format!("LZ4 frame decompression failed: {err}")))?;
+    if out.len() < 64 || &out[56..60] != b"ARM\x64" {
+        return Err(ExtractError::new(
+            "LZ4 frame decompression did not yield an arm64 Image",
         ));
     }
     Ok(out)
@@ -235,12 +253,25 @@ impl BootImage {
         let kernel_size = u32::from_le_bytes(raw[8..12].try_into().unwrap()) as usize;
         let header_size = u32::from_le_bytes(raw[20..24].try_into().unwrap()) as usize;
         let version = u32::from_le_bytes(raw[40..44].try_into().unwrap());
-        if !(version == 3 || version == 4) {
-            return Err(ExtractError::new(format!(
-                "unsupported boot header version {version}"
-            )));
-        }
-        let start = align(header_size, PAGE_SIZE);
+        // v0/v1/v2：内核从第二页开始，页大小取自头部 `page_size` 字段
+        //  （这些版本的 header_size 位置放的是 ramdisk_addr，不能拿来算偏移）。
+        // v3/v4：内核偏移是 header_size 按页对齐。
+        let start = match version {
+            0..=2 => {
+                let page = u32::from_le_bytes(raw[36..40].try_into().unwrap()) as usize;
+                if page.is_power_of_two() && (2048..=65536).contains(&page) {
+                    page
+                } else {
+                    PAGE_SIZE
+                }
+            }
+            3 | 4 => align(header_size, PAGE_SIZE),
+            _ => {
+                return Err(ExtractError::new(format!(
+                    "unsupported boot header version {version}"
+                )));
+            }
+        };
         let end = start + kernel_size;
         if end > raw.len() {
             return Err(ExtractError::new("kernel payload exceeds boot image"));
@@ -248,6 +279,14 @@ impl BootImage {
         let kernel = &raw[start..end];
         if kernel.len() >= 4 && &kernel[..4] == LZ4_LEGACY_MAGIC {
             let kernel = decompress_lz4_legacy(kernel)?;
+            return Ok(BootImage {
+                kernel,
+                mtk_lz4: true,
+                mtk_gzip: false,
+            });
+        }
+        if kernel.len() >= 4 && &kernel[..4] == LZ4_FRAME_MAGIC {
+            let kernel = decompress_lz4_frame(kernel)?;
             return Ok(BootImage {
                 kernel,
                 mtk_lz4: true,
@@ -391,13 +430,16 @@ fn is_release_shape(candidate: &str) -> bool {
     if candidate.contains('%') {
         return false;
     }
+    // `4.14.186+`, `5.10.1-dirty` and friends still name a release.
+    let number = |part: &str| {
+        part.trim_end_matches(|c: char| !c.is_ascii_digit())
+            .parse::<u32>()
+            .ok()
+    };
     let mut parts = candidate.split('.');
-    let major = parts.next().and_then(|part| part.parse::<u32>().ok());
-    let minor = parts.next().and_then(|part| part.parse::<u32>().ok());
-    let patch = parts
-        .next()
-        .and_then(|part| part.split('-').next())
-        .and_then(|part| part.parse::<u32>().ok());
+    let major = parts.next().and_then(number);
+    let minor = parts.next().and_then(number);
+    let patch = parts.next().map(|part| part.split('-').next().unwrap_or(part)).and_then(number);
     major.is_some() && minor.is_some() && patch.is_some()
 }
 

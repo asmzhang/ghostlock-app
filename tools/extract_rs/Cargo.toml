@@ -30,6 +30,7 @@ flate2 = "1"
 regex = "1"
 yaxpeax-arm = "0.5"
 yaxpeax-arch = "0.3"
+lz4_flex = { version = "0.14", features = ["frame"] }
 
 [dependencies.payload-extract]
 package = "payload-extract"
@@ -42,7 +43,6 @@ default = []
 http = ["payload-extract/http-rustls"]
 
 [dev-dependencies]
-lz4_flex = "0.14"
 prost = "0.14"
 
 [profile.release]

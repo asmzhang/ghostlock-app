@@ -21,7 +21,7 @@ namespace ghostlock::profile {
 
     template<typename F>
     inline uint64_t symbol_image(F get, uint64_t fallback) {
-        return ghostlock::kernel::KIMAGE_TEXT_BASE +
+        return ghostlock::target::address::kImageTextBaseRuntime +
                static_cast<uint64_t>(symbol_u32(get, static_cast<uint32_t>(fallback)));
     }
 

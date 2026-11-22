@@ -31,6 +31,11 @@ namespace ghostlock::memory {
 
         uintptr_t data_alias(uintptr_t image_addr) const;
 
+        /* True when the image does not live in the linear map (it was KASLR'd
+         * into a random VA window), so the runtime VA is already the address the
+         * write primitive must use and no phys->direct translation applies. */
+        bool identity_alias = false;
+
         std::optional<target::KernelAddress<target::DirectMapAddressDomain> > data_alias_checked(
             target::KernelAddress<target::ImageAddressDomain> image_address) const noexcept;
 

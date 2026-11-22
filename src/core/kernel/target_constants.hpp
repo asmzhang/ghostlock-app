@@ -9,7 +9,21 @@
 
 namespace ghostlock::target {
     namespace address {
-        inline constexpr std::uintptr_t kImageTextBase = 0xffffffc080000000ULL;
+#ifndef GHOSTLOCK_IMAGE_TEXT_BASE
+#define GHOSTLOCK_IMAGE_TEXT_BASE 0xffffffc080000000ULL
+#endif
+        /* Build-time override so a 4.14 image (VA_BITS=39, image inside the
+         * linear map at 0xffffff8008080000) can be targeted without a profile
+         * format change; profile offsets stay image-relative. */
+        inline constexpr std::uintptr_t kImageTextBase = GHOSTLOCK_IMAGE_TEXT_BASE;
+        /* Runtime mirror of kImageTextBase.  Profile offsets are image-relative,
+         * so on a kernel with KASLR every derived address has to use the base
+         * the kernel actually booted at.  Set once, right after the slide is
+         * recovered from the perf sample anchor. */
+        inline std::uintptr_t kImageTextBaseRuntime = kImageTextBase;
+        inline void set_image_text_base(std::uintptr_t base) {
+            kImageTextBaseRuntime = base;
+        }
         inline constexpr std::uintptr_t kMtkVirtualBase = 0xffffffc000000000ULL;
         inline constexpr std::uintptr_t kPageOffset = 0xffffff8000000000ULL;
         inline constexpr std::uintptr_t kPhysicalOffset = 0x80000000ULL;
@@ -18,6 +32,11 @@ namespace ghostlock::target {
         inline constexpr std::uintptr_t kKernelSnitchIdentityEnd =
                 0xffffff8c00000000ULL;
         inline constexpr std::uintptr_t kDirectMapBase = 0xffffff8000000000ULL;
+        /* VA_BITS=39 keeps the kernel half up to 0xffffffffffffffff, and a
+         * device whose KASLR picked a load address near the top of RAM (Honor
+         * YOR-AN10 lands at physical ~0x1d6da80000) puts image data well above
+         * the generic 0xffffff9000000000 cut-off. 8 GiB of linear map covers
+         * every bank these kernels are built for. */
         inline constexpr std::uintptr_t kDirectMapEnd = 0xffffff9000000000ULL;
         inline constexpr std::uintptr_t kVmemmapStart = 0xfffffffe00000000ULL;
     } // namespace address
@@ -89,7 +108,7 @@ namespace ghostlock::target {
     static_assert(sizeof(KernelAddress<ImageAddressDomain>) == sizeof(std::uintptr_t));
     static_assert(alignof(KernelAddress<ImageAddressDomain>) == alignof(std::uintptr_t));
 
-    static_assert(address::kImageTextBase == 0xffffffc080000000ULL);
+    static_assert(address::kImageTextBase == GHOSTLOCK_IMAGE_TEXT_BASE);
     static_assert(address::kMtkVirtualBase == 0xffffffc000000000ULL);
     static_assert(address::kPageOffset == address::kDirectMapBase);
     static_assert(address::kKernelSnitchIdentityStart == address::kDirectMapBase);
