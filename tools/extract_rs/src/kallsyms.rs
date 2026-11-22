@@ -46,6 +46,12 @@ pub fn unique(symbols: &BTreeMap<String, BTreeSet<u64>>, name: &str) -> Option<u
     }
 }
 
+/// Lowest address among a symbol's aliases; vendor kernels list `_text` more
+/// than once (e.g. an absolute alias next to the real label).
+pub fn lowest(symbols: &BTreeMap<String, BTreeSet<u64>>, name: &str) -> Option<u64> {
+    symbols.get(name).and_then(|values| values.iter().next().copied())
+}
+
 pub fn unique_or_err(symbols: &BTreeMap<String, BTreeSet<u64>>, name: &str) -> Result<u64> {
     let values = symbols.get(name).cloned().unwrap_or_default();
     if values.len() != 1 {

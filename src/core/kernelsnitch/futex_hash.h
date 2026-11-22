@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef GHOSTLOCK_FUTEX_KEY_LAYOUT_414
+#define GHOSTLOCK_FUTEX_KEY_LAYOUT_414 0
+#endif
+
 /* Pure hash/bucket arithmetic: no KernelSnitch state, no Android headers, so
  * the same translation unit can be exercised by host fixed-vector tests. */
 #include <cerrno>
@@ -243,6 +247,29 @@ namespace ghostlock::kernelsnitch {
     /* Construct the Linux private futex key for address/mm and hash it using only
  * explicit inputs. Input: immutable context, userspace address and candidate
  * mm; output: bucket index, or UINT32_MAX for an invalid context. */
+    /* 4.14 layout: union futex_key.private = {address, mm, offset} and
+ * hash_futex() runs jhash2 over three u32 words (address low/high, mm low) with
+ * the page offset as initval (kernel/futex.c:395-399, v4.14). Modern kernels
+ * hash four words of {mm, address} instead, so the same user address lands in a
+ * different bucket; this variant keeps KernelSnitch's candidate matching honest
+ * on 4.14. */
+    static inline uint32_t
+    futex_hash_context_bucket_legacy_414(const FutexHashContext *context, size_t addr,
+                                         size_t mm) {
+        if (!context || !context->table_size) return UINT32_MAX;
+        const size_t page = addr & ~static_cast<size_t>(0xfff);
+        /* (sizeof(both.word) + sizeof(both.ptr)) / 4 == 4 words: the aligned
+     * address then the mm pointer, with the page offset as the initval. */
+        const uint32_t words[4] = {
+            static_cast<uint32_t>(page),
+            static_cast<uint32_t>(page >> 32),
+            static_cast<uint32_t>(mm),
+            static_cast<uint32_t>(static_cast<uint64_t>(mm) >> 32),
+        };
+        const uint32_t initval = static_cast<uint32_t>(addr & 0xfff);
+        return jhash2(words, 4, initval) & (context->table_size - 1);
+    }
+
     static inline uint32_t
     futex_hash_context_bucket(const FutexHashContext *context, size_t addr,
                               size_t mm) {

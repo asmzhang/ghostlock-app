@@ -48,7 +48,7 @@ namespace ghostlock::kernel {
     /* `select_stack_route.h` keeps a host-safe fallback macro under this name, so a
  * TU that includes it before common.h must not also declare the constexpr. */
 #ifndef PSELECT_ROUTE_NFDS
-    inline constexpr unsigned PSELECT_ROUTE_NFDS = 320;
+    inline constexpr unsigned PSELECT_ROUTE_NFDS = 448;
 #endif
     inline constexpr int32_t PSELECT_CONSUMER_NICE = 19;
     inline constexpr unsigned PSELECT_CONSUMER_SETTLE_USEC = 250000;

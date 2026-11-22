@@ -220,10 +220,21 @@ namespace ghostlock::kernelsnitch {
         int32_t sweep_tags;
     };
 
+    /* Bucket policy for candidate matching; 4.14 hashes a different key layout
+ * than the modern kernels KernelSnitch was written against. */
+    static inline uint32_t ks_bucket(const struct futex_hash_context *context, size_t addr,
+                                     size_t mm) {
+#if GHOSTLOCK_FUTEX_KEY_LAYOUT_414
+        return futex_hash_context_bucket_legacy_414(context, addr, mm);
+#else
+        return futex_hash_context_bucket(context, addr, mm);
+#endif
+    }
+
     static int32_t __mm_candidate_matches(struct kernelsnitch_shared_state *ks, size_t candidate) {
         for (size_t i = 1; i < ks->collisions; ++i) {
-            if (futex_hash_context_bucket(&ks->futex_hash, ks->futex_addrs[0], candidate) !=
-                futex_hash_context_bucket(&ks->futex_hash, ks->futex_addrs[i], candidate))
+            if (ks_bucket(&ks->futex_hash, ks->futex_addrs[0], candidate) !=
+                ks_bucket(&ks->futex_hash, ks->futex_addrs[i], candidate))
                 return 0;
         }
         return 1;

@@ -113,7 +113,7 @@ object ProfileMerger {
 
     private fun validateResolved(profile: ValueMap, release: String) {
         require(profile["release"] == release) { "profile release mismatch" }
-        require((profile["kernel_major"] as? Number)?.toInt() in 5..6) { "invalid kernel_major" }
+        require((profile["kernel_major"] as? Number)?.toInt() in 4..6) { "invalid kernel_major" }
         require(profile.containsKey("execution")) { "missing execution tuning" }
     }
 }

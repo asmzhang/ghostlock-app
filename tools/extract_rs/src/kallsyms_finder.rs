@@ -16,14 +16,22 @@ use crate::kallsyms::Kallsyms;
 const ALIGN: usize = 8;
 const TOKEN_COUNT: usize = 256;
 const TOKEN_INDEX_SIZE: usize = TOKEN_COUNT * 2;
+/// token 表尾到索引表的最大搜索距离（4.14 实测 65 字节填充，按 256 对齐）。
+const TOKEN_INDEX_SEARCH: usize = 1024;
 const MAX_TOKEN_LEN: usize = 256;
 const MARKER_SEARCH_WINDOW: usize = 4 * 1024 * 1024;
 const NAME_TAIL_SEARCH: usize = 0x40000;
+/// `kallsyms_markers` may sit up to this far past the end of the names block
+/// (linkers round the block up to 256 bytes on 4.14+).
+const NAME_END_PADDING: usize = 256;
 const MIN_MARKERS: usize = 8;
 const MAX_MARKERS: usize = 4096;
 
 const SYMBOL_TYPES: &[u8] = b"aAbBcCdDeEfFgGiInNpPrRsStTuUvVwW?-";
-const REQUIRED_SYMBOLS: [&str; 3] = ["_text", "_end", "load_module"];
+/// Anchor symbols every real kallsyms table carries. Vendor 4.14 kernels drop
+/// `_text`/`_end` in favour of `_stext`/`_etext`, so only `load_module` is
+/// mandatory here; the address decoders pick whichever text base exists.
+const REQUIRED_SYMBOLS: [&str; 1] = ["load_module"];
 
 const fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & !(alignment - 1)
@@ -115,28 +123,31 @@ fn parse_token_table_at(image: &[u8], start: usize, digit_offset: usize) -> Opti
         }
     }
 
-    let index_offset = align_up(position, ALIGN);
-    if image
-        .get(position..index_offset)?
-        .iter()
-        .any(|byte| *byte != 0)
-    {
+    // 4.14 及更早的内核把 token 表放进单独的节，`kallsyms_token_index` 与表尾之间
+    // 会留一段零填充（实测 65 字节，按 256 字节对齐），不像 5.10+ 那样紧贴 8 字节对齐。
+    // 因此在表尾之后一小段范围内逐个试候选索引起点，取第一个 256 项全部吻合的位置。
+    if *token_offsets.last()? > u16::MAX as usize {
         return None;
     }
-    let index_end = index_offset.checked_add(TOKEN_INDEX_SIZE)?;
-    if index_end > image.len() || *token_offsets.last()? > u16::MAX as usize {
-        return None;
-    }
-    for (index, &expected) in token_offsets.iter().enumerate() {
-        if read_u16(image, index_offset + index * 2)? as usize != expected {
-            return None;
+    let search_limit = position.saturating_add(TOKEN_INDEX_SEARCH);
+    let mut index_offset = align_up(position, 2);
+    while index_offset < search_limit && index_offset + TOKEN_INDEX_SIZE <= image.len() {
+        let matches = token_offsets
+            .iter()
+            .enumerate()
+            .all(|(index, &expected)| {
+                read_u16(image, index_offset + index * 2) == Some(expected as u16)
+            });
+        if matches {
+            return Some(TokenTable {
+                tokens,
+                table_offset: start,
+                index_offset,
+            });
         }
+        index_offset += 2;
     }
-    Some(TokenTable {
-        tokens,
-        table_offset: start,
-        index_offset,
-    })
+    None
 }
 
 /// Scan the image for token tables: find the "0\0..9\0" digit run, then try
@@ -167,14 +178,26 @@ fn find_token_tables(image: &[u8]) -> Vec<TokenTable> {
 
 /// Read `kallsyms_markers` starting at `start`: first entry 0, every following
 /// delta within one name-block (0x200..=0x40000); bounded by `limit`.
-fn read_markers(image: &[u8], start: usize, limit: usize) -> Vec<u32> {
-    if start % ALIGN != 0 || start.saturating_add(8) > limit {
+/// 读一个条目：`stride` 为 4 表示 u32（5.x 起的 `kallsyms_markers`），
+/// 为 8 表示「PTR」宽度的 u64（4.14 及更早在 arm64 上就是 8 字节）。
+fn read_marker_word(image: &[u8], offset: usize, stride: usize) -> Option<u32> {
+    let value = if stride == 8 {
+        let bytes = image.get(offset..offset.checked_add(8)?)?;
+        u64::from_le_bytes(bytes.try_into().ok()?)
+    } else {
+        read_u32(image, offset)? as u64
+    };
+    u32::try_from(value).ok()
+}
+
+fn read_markers_with_stride(image: &[u8], start: usize, limit: usize, stride: usize) -> Vec<u32> {
+    if start % ALIGN != 0 || start.saturating_add(stride * 2) > limit {
         return Vec::new();
     }
-    let Some(first) = read_u32(image, start) else {
+    let Some(first) = read_marker_word(image, start, stride) else {
         return Vec::new();
     };
-    let Some(second) = read_u32(image, start + 4) else {
+    let Some(second) = read_marker_word(image, start + stride, stride) else {
         return Vec::new();
     };
     if first != 0 || !(0x200..=0x40000).contains(&second) {
@@ -182,9 +205,9 @@ fn read_markers(image: &[u8], start: usize, limit: usize) -> Vec<u32> {
     }
 
     let mut markers = vec![first, second];
-    let mut position = start + 8;
-    while markers.len() < MAX_MARKERS && position.saturating_add(4) <= limit {
-        let Some(value) = read_u32(image, position) else {
+    let mut position = start + stride * 2;
+    while markers.len() < MAX_MARKERS && position.saturating_add(stride) <= limit {
+        let Some(value) = read_marker_word(image, position, stride) else {
             break;
         };
         let Some(delta) = value.checked_sub(*markers.last().expect("non-empty markers")) else {
@@ -194,13 +217,24 @@ fn read_markers(image: &[u8], start: usize, limit: usize) -> Vec<u32> {
             break;
         }
         markers.push(value);
-        position += 4;
+        position += stride;
     }
     if markers.len() < MIN_MARKERS {
         Vec::new()
     } else {
         markers
     }
+}
+
+fn read_markers(image: &[u8], start: usize, limit: usize) -> Vec<(usize, Vec<u32>)> {
+    let mut found = Vec::new();
+    for stride in [4usize, 8] {
+        let markers = read_markers_with_stride(image, start, limit, stride);
+        if !markers.is_empty() {
+            found.push((stride, markers));
+        }
+    }
+    found
 }
 
 /// Walk `count` length-prefixed name entries; every 256th entry must match the
@@ -248,7 +282,8 @@ fn parse_name_spans(
         position += length;
     }
 
-    if align_up(position, ALIGN) != markers_offset
+    if markers_offset < position
+        || markers_offset - position > NAME_END_PADDING
         || image
             .get(position..markers_offset)?
             .iter()
@@ -310,15 +345,16 @@ fn find_name_tables(image: &[u8], tokens: &[Vec<u8>], token_table_offset: usize)
     let mut marker_candidates = Vec::new();
     let mut position = align_up(lower, ALIGN);
     while position.saturating_add(8) <= token_table_offset {
-        let markers = read_markers(image, position, token_table_offset);
-        if !markers.is_empty() {
-            marker_candidates.push((position, markers));
+        for (stride, markers) in read_markers(image, position, token_table_offset) {
+            marker_candidates.push((position, stride, markers));
         }
         position += ALIGN;
     }
 
+    eprintln!("[dbg] marker candidates = {}", marker_candidates.len());
     let mut recovered = Vec::new();
-    for (markers_offset, markers) in marker_candidates {
+    for (markers_offset, marker_stride, markers) in marker_candidates {
+        let _ = marker_stride;
         let minimum_count = (markers.len() - 1) * 256 + 1;
         let maximum_count = markers.len() * 256;
         let Some(approximate_names) =
@@ -326,40 +362,59 @@ fn find_name_tables(image: &[u8], tokens: &[Vec<u8>], token_table_offset: usize)
         else {
             continue;
         };
+        eprintln!(
+            "[dbg] markers @0x{:x} n={} last=0x{:x} approx_names=0x{:x}",
+            markers_offset,
+            markers.len(),
+            *markers.last().unwrap(),
+            approximate_names
+        );
         let search_start = approximate_names.saturating_sub(NAME_TAIL_SEARCH);
         let mut num_syms_offset = approximate_names - approximate_names % ALIGN;
         loop {
             if num_syms_offset.saturating_add(8) <= image.len() {
-                let count = read_u32(image, num_syms_offset).unwrap_or(0) as usize;
-                let padding_is_zero = matches!(
-                    image.get(num_syms_offset + 4..num_syms_offset + 8),
-                    Some(padding) if padding == [0u8; 4]
-                );
-                if (minimum_count..=maximum_count).contains(&count) && padding_is_zero {
-                    let names_offset = num_syms_offset + ALIGN;
-                    let mut seen_spans: Vec<Vec<(usize, usize)>> = Vec::new();
-                    for uleb128_lengths in [true, false] {
-                        let Some(spans) = parse_name_spans(
-                            image,
-                            names_offset,
-                            count,
-                            markers_offset,
-                            &markers,
-                            uleb128_lengths,
-                        ) else {
-                            continue;
-                        };
-                        if seen_spans.contains(&spans) {
+                let count = read_u64(image, num_syms_offset).unwrap_or(0) as usize;
+                if (minimum_count..=maximum_count).contains(&count) {
+                    eprintln!(
+                        "[dbg] count candidate @0x{:x} = {} (window {}..={})",
+                        num_syms_offset, count, minimum_count, maximum_count
+                    );
+                    // 4.14 (and later) pad the names block to a 256-byte
+                    // boundary, so `kallsyms_names` can start well after the
+                    // `num_syms` word. Try every power-of-two pad the linker
+                    // uses and keep the ones whose gap is entirely zero.
+                    for pad in [ALIGN, 0x40, 0x80, 0x100] {
+                        let names_offset = num_syms_offset.saturating_add(pad);
+                        let gap_is_zero = image
+                            .get(num_syms_offset + ALIGN..names_offset)
+                            .is_some_and(|gap| gap.iter().all(|byte| *byte == 0));
+                        if !gap_is_zero {
                             continue;
                         }
-                        seen_spans.push(spans.clone());
-                        if let Some(decoded) = decode_names(image, &spans, tokens) {
-                            recovered.push((
-                                num_syms_offset,
+                        let mut seen_spans: Vec<Vec<(usize, usize)>> = Vec::new();
+                        for uleb128_lengths in [true, false] {
+                            let Some(spans) = parse_name_spans(
+                                image,
                                 names_offset,
+                                count,
                                 markers_offset,
-                                decoded,
-                            ));
+                                &markers,
+                                uleb128_lengths,
+                            ) else {
+                                continue;
+                            };
+                            if seen_spans.contains(&spans) {
+                                continue;
+                            }
+                            seen_spans.push(spans.clone());
+                            if let Some(decoded) = decode_names(image, &spans, tokens) {
+                                recovered.push((
+                                    num_syms_offset,
+                                    names_offset,
+                                    markers_offset,
+                                    decoded,
+                                ));
+                            }
                         }
                     }
                 }
@@ -460,6 +515,7 @@ fn decode_addresses(
         .filter(|&&address| text_addresses[0] <= address && address <= end_addresses[0])
         .count();
     if ordinary_addresses.is_empty() || in_image * 100 < ordinary_addresses.len() * 90 {
+        eprintln!("[dbg] abs: in_image {}/{}", in_image, ordinary_addresses.len());
         return None;
     }
 
@@ -470,6 +526,150 @@ fn decode_addresses(
             .map(|(address, (kind, name))| (address, *kind, name.clone()))
             .collect(),
     )
+}
+
+/// Decode `kallsyms_addresses`: one absolute 8-byte address per symbol, used by
+/// kernels built without `CONFIG_KALLSYMS_BASE_RELATIVE` (the common 4.14
+/// configuration on Android vendor kernels).
+fn decode_absolute_addresses(
+    image: &[u8],
+    image_size: usize,
+    names: &[(u8, String)],
+    addresses_offset: usize,
+) -> Option<Vec<(u64, u8, String)>> {
+    let count = names.len();
+    let addresses_end = addresses_offset.checked_add(count.checked_mul(8)?)?;
+    if addresses_end > image.len() {
+        return None;
+    }
+
+    let addresses = (0..count)
+        .map(|index| read_u64(image, addresses_offset + index * 8))
+        .collect::<Option<Vec<_>>>()?;
+    decode_with_addresses(image_size, names, addresses)
+}
+
+/// Validate an address table against the decoded names.
+fn decode_with_addresses(
+    image_size: usize,
+    names: &[(u8, String)],
+    addresses: Vec<u64>,
+) -> Option<Vec<(u64, u8, String)>> {
+    if addresses.len() != names.len() {
+        return None;
+    }
+    if addresses.windows(2).any(|pair| pair[0] > pair[1]) {
+        return None;
+    }
+
+    let text_addresses = addresses
+        .iter()
+        .zip(names)
+        .filter_map(|(&address, (_, name))| (name == "_text" || name == "_stext").then_some(address))
+        .collect::<Vec<_>>();
+    if text_addresses.len() != 1 {
+        eprintln!("[dbg] abs: text anchors = {}", text_addresses.len());
+        return None;
+    }
+    let image_end = text_addresses[0].checked_add(image_size as u64)?;
+
+    let ordinary_addresses = addresses
+        .iter()
+        .zip(names)
+        .filter_map(|(&address, (kind, _))| {
+            (!b"Aa".contains(kind) && address != 0).then_some(address)
+        })
+        .collect::<Vec<_>>();
+    let in_image = ordinary_addresses
+        .iter()
+        .filter(|&&address| text_addresses[0] <= address && address <= image_end)
+        .count();
+    if ordinary_addresses.is_empty() || in_image * 100 < ordinary_addresses.len() * 90 {
+        eprintln!("[dbg] abs: in_image {}/{}", in_image, ordinary_addresses.len());
+        return None;
+    }
+
+    Some(
+        addresses
+            .into_iter()
+            .zip(names)
+            .map(|(address, (kind, name))| (address, *kind, name.clone()))
+            .collect(),
+    )
+}
+
+const R_AARCH64_RELATIVE: u32 = 0x403;
+const RELA_ENTRY_SIZE: usize = 24;
+
+/// Relocatable kernels keep `kallsyms_addresses` as zero-filled space that the
+/// boot-time `.rela.dyn` pass fills in. The addends of those
+/// `R_AARCH64_RELATIVE` entries already hold the linked addresses, so read them
+/// straight out of the relocation table instead of the (zeroed) array.
+fn recover_relocated_addresses(image: &[u8], count: usize) -> Option<Vec<u64>> {
+    if count == 0 {
+        return None;
+    }
+    let limit = image.len().checked_sub(RELA_ENTRY_SIZE)?;
+    let is_relative = |offset: usize| {
+        read_u64(image, offset + 8)
+            .is_some_and(|info| (info & 0xffff_ffff) as u32 == R_AARCH64_RELATIVE)
+    };
+
+    // Entries are 24 bytes apart; walk the longest stretch of relative
+    // relocations, which is the `.rela.dyn` blob.
+    let mut table = (0usize, 0usize);
+    let mut offset = 0usize;
+    while offset <= limit {
+        let starts_run = is_relative(offset)
+            && (offset < RELA_ENTRY_SIZE || !is_relative(offset - RELA_ENTRY_SIZE));
+        if !starts_run {
+            offset += 8;
+            continue;
+        }
+        let mut length = 0usize;
+        while offset + length * RELA_ENTRY_SIZE <= limit && is_relative(offset + length * RELA_ENTRY_SIZE) {
+            length += 1;
+        }
+        if length > table.1 {
+            table = (offset, length);
+        }
+        offset += length.max(1) * RELA_ENTRY_SIZE;
+    }
+    if table.1 < count {
+        return None;
+    }
+
+    let entries = (0..table.1)
+        .filter_map(|index| {
+            let offset = table.0 + index * RELA_ENTRY_SIZE;
+            let r_offset = read_u64(image, offset)?;
+            let info = read_u64(image, offset + 8)?;
+            let addend = read_u64(image, offset + 16)?;
+            ((info & 0xffff_ffff) as u32 == R_AARCH64_RELATIVE).then_some((r_offset, addend))
+        })
+        .collect::<Vec<_>>();
+
+    // The address array is relocated one entry per symbol, so it shows up as a
+    // `count`-long run whose targets step by eight bytes.
+    let mut index = 0usize;
+    while index < entries.len() {
+        let start = index;
+        while index + 1 < entries.len() && entries[index + 1].0 == entries[index].0 + 8 {
+            index += 1;
+        }
+        if index - start + 1 == count {
+            let addresses = entries[start..=index]
+                .iter()
+                .map(|&(_, addend)| addend)
+                .collect::<Vec<_>>();
+            if addresses.iter().all(|address| *address >= 0xffff_0000_0000_0000) {
+                eprintln!("[dbg] rela table @0x{:x} entries={}", table.0, table.1);
+                return Some(addresses);
+            }
+        }
+        index += 1;
+    }
+    None
 }
 
 struct Candidate {
@@ -503,7 +703,14 @@ pub fn recover(image: &[u8], btf: Option<(usize, usize)>) -> Result<Kallsyms> {
     let mut name_blocks = 0usize;
 
     for table in &token_tables {
+        eprintln!(
+            "[dbg] token table @0x{:x} index @0x{:x} tokens={}",
+            table.table_offset,
+            table.index_offset,
+            table.tokens.len()
+        );
         let name_tables = find_name_tables(image, &table.tokens, table.table_offset);
+        eprintln!("[dbg] name tables = {}", name_tables.len());
         for (num_syms_offset, _, _, names) in name_tables {
             name_blocks += 1;
             let count = names.len();
@@ -523,6 +730,23 @@ pub fn recover(image: &[u8], btf: Option<(usize, usize)>) -> Result<Kallsyms> {
                     relative_base_offset,
                 ) {
                     candidates.push(Candidate { entries, layout });
+                }
+            }
+            let absolute_offsets =
+                num_syms_offset.saturating_sub(count.saturating_mul(8)) & !(ALIGN - 1);
+            if let Some(entries) =
+                decode_absolute_addresses(image, image_size, &names, absolute_offsets)
+            {
+                candidates.push(Candidate {
+                    entries,
+                    layout: "absolute-8",
+                });
+            } else if let Some(addresses) = recover_relocated_addresses(image, count) {
+                if let Some(entries) = decode_with_addresses(image_size, &names, addresses) {
+                    candidates.push(Candidate {
+                        entries,
+                        layout: "rela-8",
+                    });
                 }
             }
         }

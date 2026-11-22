@@ -303,10 +303,14 @@ fn run(cli: &Cli) -> Result<i32> {
         cli,
     )?;
     let symbols = ks.symbols;
-    let text_base = kallsyms::unique(&symbols, "_text");
-    let base = text_base.or_else(|| kallsyms::unique(&symbols, "_head"));
+    let text_base = kallsyms::lowest(&symbols, "_text");
+    let base = text_base
+        .or_else(|| kallsyms::lowest(&symbols, "_head"))
+        // Vendor kernels that hide `_head` still place `_stext` one page into
+        // the image, so recover the load base from it.
+        .or_else(|| kallsyms::lowest(&symbols, "_stext").and_then(|s| s.checked_sub(0x1000)));
     let Some(base) = base else {
-        return Err(ExtractError::new("_text/_head is not unique in kallsyms"));
+        return Err(ExtractError::new("kallsyms has no _text/_head/_stext symbol"));
     };
 
     // DRAM base / linear-map offset, and (with the kallsyms delta) the kernel
@@ -608,9 +612,9 @@ fn run(cli: &Cli) -> Result<i32> {
             .split('.')
             .next()
             .and_then(|part| part.parse::<u32>().ok());
-        if major != Some(5) && major != Some(6) {
+        if !matches!(major, Some(4) | Some(5) | Some(6)) {
             return Err(ExtractError::new(format!(
-                "--format conf needs a 5.x/6.x release, got {release_text}"
+                "--format conf needs a 4.x/5.x/6.x release, got {release_text}"
             )));
         }
         // Candidate output: emit everything the image actually yielded and

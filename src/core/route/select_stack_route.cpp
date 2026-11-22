@@ -249,6 +249,13 @@ namespace ghostlock::route {
     }
 
     static int32_t pselect_waiter_shift(const select_stack::SelectStackRoute *context) {
+        /* Probe override: the shift is a property of the target's syscall stack
+         * layout, so a run may sweep candidates without re-exporting the profile. */
+        if (const char *shift_override = getenv("GHOSTLOCK_WAITER_SHIFT");
+            shift_override && shift_override[0]) {
+            const long parsed = strtol(shift_override, nullptr, 0);
+            if (parsed >= -64 && parsed <= 64) return static_cast<int32_t>(parsed);
+        }
         return session::g_exploit_session.profile.loaded()
                    ? context->layout.waiter_shift.value_or(0)
                    : kernel::PSELECT_WAITER_WORD_SHIFT;

@@ -6,6 +6,8 @@
 
 #include "race/threads.hpp"
 
+#include <cstdlib>
+
 #include "attack/ops.hpp"
 #include "profile/model.h"
 #include "route/route_controller.h"
@@ -226,6 +228,9 @@ namespace ghostlock::race {
                     int32_t consumer_nice = session::g_exploit_session.profile.has_compact_waiter()
                                             ? (calls_this_seq % 19) + 1
                                             : kernel::PSELECT_CONSUMER_NICE;
+                    if (const char *cn = std::getenv("GHOSTLOCK_CONSUMER_NICE")) {
+                        if (cn[0]) consumer_nice = static_cast<int32_t>(std::strtol(cn, nullptr, 0));
+                    }
                     /* Pre-call breadcrumb: this is the last line that must be on
                      * disk before the PI walk is entered. Comparing it with the
                      * post-call line below splits the two candidates for a lost

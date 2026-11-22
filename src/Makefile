@@ -64,7 +64,7 @@ COMMON_FLAGS := -O2 -flto -Wall -Wextra -Wconversion -Wsign-conversion \
   -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
   -Icore -DTARGET_CONFIG_H=\"$(TARGET_CONFIG)\"
 CFLAGS := $(COMMON_FLAGS) -std=gnu11
-CXXFLAGS := $(COMMON_FLAGS) -std=c++23 -fno-rtti
+CXXFLAGS := $(COMMON_FLAGS) -std=c++23 -fno-rtti $(GHOSTLOCK_EXTRA_FLAGS)
 LDFLAGS := -fPIE -pie -pthread -flto -static-libstdc++
 
 HOST_CC ?= cc

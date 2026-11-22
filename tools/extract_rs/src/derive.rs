@@ -68,29 +68,43 @@ pub fn ensure_rtmutex_43499_unpatched(
     symbols: &RelSymbols,
     sorted_offsets: &[u64],
 ) -> Result<u64> {
-    let start = unique_offset_optional(symbols, "remove_waiter")
-        .ok_or_else(|| ExtractError::new("cannot check: remove_waiter is not in kallsyms"))?;
+    // Clang happily inlines this static helper into its futex callers, so fall
+    // back to the enclosing functions and look for the same `current` read.
     let cap = OBJDUMP_CAP as u64;
-    let stop = (start + cap).min(
-        sorted_offsets
-            .iter()
-            .find(|off| **off > start)
-            .map_or(start + cap, |off| *off),
-    );
-    let dis = disassemble_range(kernel, start as usize, stop as usize)?;
-    if remove_waiter_uses_current(&dis) {
-        return Ok(start);
+    let mut checked = None;
+    for name in ["remove_waiter", "futex_lock_pi", "futex_wait"] {
+        let Some(start) = unique_offset_optional(symbols, name) else {
+            continue;
+        };
+        let stop = (start + cap).min(
+            sorted_offsets
+                .iter()
+                .find(|off| **off > start)
+                .map_or(start + cap, |off| *off),
+        );
+        let dis = disassemble_range(kernel, start as usize, stop as usize)?;
+        if remove_waiter_uses_current(&dis) {
+            return Ok(start);
+        }
+        eprintln!("[dbg] {name}@{start:#x} lines={:?}", &dis[..dis.len().min(6)]);
+        checked.get_or_insert(start);
     }
-    Err(ExtractError::already_fixed(format!(
-        "remove_waiter()@{start:#x} never reads current (no mrs sp_el0); \
-         rtmutex UAF fix is present"
-    )))
+    match checked {
+        Some(start) => Err(ExtractError::already_fixed(format!(
+            "remove_waiter()@{start:#x} never reads current (no mrs sp_el0); \
+             rtmutex UAF fix is present"
+        ))),
+        None => Err(ExtractError::new(
+            "cannot check: remove_waiter/futex_lock_pi/futex_wait all absent from kallsyms",
+        )),
+    }
 }
 
 /// True when `remove_waiter()` still operates on `current` (vulnerable):
 /// the fixed variant no longer contains `mrs xN, sp_el0`.
 pub fn remove_waiter_uses_current(dis: &[String]) -> bool {
-    let mrs_current = Regex::new(r"(?i)\bmrs\s+x\d+,\s*s3_0_c4_c1_0\b").unwrap();
+    let mrs_current =
+        Regex::new(r"(?i)\bmrs\s+x\d+,\s*(?:sp_el0|s3_0_c4_c1_0)\b").unwrap();
     dis.iter().any(|line| mrs_current.is_match(line))
 }
 
